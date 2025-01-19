@@ -1,8 +1,9 @@
 .env
 venv/
-config.ini
+*.ini
 *.db
 .DS_STORE
 __pycache__
 alter_records.py
 /__pycache__
+*.pyc

@@ -24,6 +24,7 @@ Verified Scheme {
     DISCORD_ID: INTEGER* PRIMARY KEY,
     EMAIL: TEXT*,
     TEAM_ID: INTEGER REFERENCES {_TEAM_TABLE_NAME}(id)
+    USERNAME: TEXT*
 }
 
 - Channels is a JSON object that can have a variable number of channels, 
@@ -97,7 +98,7 @@ def add_registered_user(email: str, roles: list, data: dict):
    
     #Check if user is not verified
     if verified_email_exists(email):
-        print("User is already verified. Registered user is not added")
+        print(f"The email ({email}) is already verified. Registered user is not added")
         return
 
     #Check if user with that email already registerd and remove it
@@ -339,7 +340,9 @@ def get_team_id(team_name: str) -> int:
     return cursor.execute(f"SELECT id FROM {_TEAM_TABLE_NAME} WHERE name=:team_name", {'team_name': team_name}).fetchone()[0]
 
 def get_team_members(team_id: int) -> list:
-    return cursor.execute(f'SELECT discord_id FROM {_VERIFIED_TABLE_NAME} WHERE team_id=:team_id', {'team_id': team_id}).fetchall()
+    cursor.execute(f'SELECT discord_id FROM {_VERIFIED_TABLE_NAME} WHERE team_id=:team_id', {'team_id': team_id})
+    members = cursor.fetchall()
+    return members
 
 def team_name_exists(team_name: int) -> bool:
     cursor.execute(f"SELECT * FROM {_TEAM_TABLE_NAME} WHERE name=:team_name", {
