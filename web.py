@@ -47,15 +47,13 @@ def push_user():
         data = request.get_json()
         
         # Email is required
-        email = data.get("email")
+        email = data.get("email", "").lower()
 
         if not email:
             return jsonify({"Error": "Email is required"}), 400
         
         if data.get("isAdultOrOSU") == 2:
             return jsonify({"Error": "Participant not allowed"}), 400
-        
-        email = email.lower()
         
         # Get the 'roles' data from the input, defaulting to an empty string if not found
         roles_input = data.get("roles", "")
@@ -75,7 +73,7 @@ def push_user():
         if len(roles) == 0:
             roles.append('participant')
         
-        data = {
+        user_data = {
             "first_name": data.get("firstName"),
             "last_name": data.get("lastName"),
             "university": data.get("university"),
@@ -91,18 +89,18 @@ def push_user():
         #Append Data to Database 
         try:
             #Add User to registrant list
-            records.add_registered_user(email, roles, data)
+            records.add_registered_user(email, roles, user_data)
 
             #Send back "Good" Message
-            return jsonify({"email": email, "roles": role, "data": data}), 200
+            return jsonify({"email": email, "roles": roles, "data": user_data}), 200
         except Exception as e:
             #Send Error that user being added has failed
             print(f"ERROR {e}: Not all data in the request was included or error with DB file")
-            abort(400)
+            return jsonify({f"Error: {e}"}), 400
     else:
         #Send Error that Api-Key is not correct
         print("ERROR: Api-Key is not correct.")
-        abort(401)
+        return jsonify({"ERROR: Api-Key is not correct."}), 401
 
 #Method to start a server and wait for a request
 def start():
