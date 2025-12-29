@@ -1062,6 +1062,42 @@ async def broadcast(interaction: discord.Interaction, message: str):
     )
 
 
+@bot.tree.command(name="broadcast", description="Broadcast a message to each team channel")
+@app_commands.default_permissions(administrator=True)
+async def broadcast(interaction: discord.Interaction, message: str):
+    """
+    Broadcasts a message to each team's text channel.
+
+    Args:
+        ctxt (discord.Interaction): The Context of the Interaction.
+        flags (messageFlag): Flag containing the message to broadcast.
+    """
+
+    guild = interaction.guild
+    if not guild:
+        await interaction.response.send_message(
+            content="There was an error retrieving the Discord server information. Please contact an organizer for assistance.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.defer(ephemeral=True)
+
+    teams = records.get_all_teams()
+    print(teams)
+    for team in teams:
+        team_text_channel = cast(discord.TextChannel, guild.get_channel(team.get("text_id")))
+        role_obj = guild.get_role(team.get("role_id"))
+        if not role_obj:
+            continue
+        team_mention = role_obj.mention
+        if team_text_channel:
+            await team_text_channel.send(content=f"{team_mention}\n{message}")
+
+    await interaction.followup.send(
+        content="Broadcast message sent to all team channels.", ephemeral=True
+    )
+
+
 @bot.hybrid_command(name="sync", description="Sync commands (Organizer Only)")
 @app_commands.default_permissions(administrator=True)
 @commands.has_permissions(administrator=True)
