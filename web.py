@@ -30,7 +30,7 @@ registers for the event. This will keep the db up-to-date with new registrations
 Format for Post Requests JSON
 {
     header: {
-        'Api-Key': str
+        'api-key': str
     }
     body: {
         'email': str,
@@ -39,10 +39,15 @@ Format for Post Requests JSON
         'last_name': str,
         
         'is_capstone': bool,
-        'roles': (role,role), (comma-separated)        
+        'roles': "role,role", (comma-separated)        
     }
 }
 '''
+
+ROLE_MAP = {
+    '1': 'judge',
+    '2': 'mentor'
+}
 
 #Define the server as app
 app = Flask(__name__)
@@ -50,78 +55,51 @@ app = Flask(__name__)
 #Setup a method to listen at "/post/user" for a post request
 @app.route("/post/user", methods=['POST'])
 def push_user():
-    #Check that API key is correct
-    if (request.headers.get('Api-Key') == config.web_api_key):
-       
-        ROLE_MAP = {
-            '1': 'judge',
-            '2': 'mentor'
-        }
-        
-        #Retrieve Data from Request
-        data = request.get_json()
-        
-        # Email is required
-        email = data.get("email", "").lower()
 
-        if not email:
-            logging.error("Email is required.")
-            return jsonify({"error": "Email is required"}), 400
-
-        if data.get("isAdultOrOSU") == 2:
-            logging.error("Participant not allowed.")
-            return jsonify({"error": "Participant not allowed"}), 400
-
-        # Get the 'roles' data from the input, defaulting to an empty string if not found
-        roles_input = data.get("roles", "")
-
-        # Initialize an empty list to store the roles
-        roles = []
-
-        # If role_input is not empty, process the roles
-        if roles_input:
-            # Split the input into individual role strings (by comma), and process each one
-            for role in roles_input.split(','):
-                role = role.strip()  # Clean up any extra spaces around the role
-                if role in ROLE_MAP and (role not in roles):  # Only consider valid roles
-                    roles.append(ROLE_MAP.get(role))  # Add the corresponding role name to the list        
-        
-        # If there is no roles at this point, it is because they're a participant
-        if len(roles) == 0:
-            roles.append('participant')
-        
-        user_data = {
-            # Data fields for both forms
-            "first_name": data.get("firstName"),
-            "last_name": data.get("lastName"),
-
-            # Data fields specific to the participant form
-            "university": data.get("university"),
-            "class_team": data.get("classTeam"),
-            "major": data.get("major"),
-            "grad_year": data.get("gradYear"),
-
-            # Data fields specific to the judges/mentors form
-            "company": data.get("company"),
-            "job_title": data.get("jobTitle"),
-        }
-        
-        #Append Data to Database 
-        try:
-            #Add User to registrant list
-            records.add_registered_user(email, roles, user_data)
-
-            #Send back "Good" Message
-            logging.info(f"User registered successfully: {email} with roles {roles}")
-            return jsonify({"email": email, "roles": roles, "data": user_data}), 201
-        except Exception as e:
-            #Send Error that user being added has failed
-            logging.exception(f"An unexpected error occured: {e}")
-            return jsonify({"error": "An internal server error occurred."}), 500
-    else:
-        #Send Error that Api-Key is not correct
+    # 1. Ensure API-KEY is correct      
+    if (request.headers.get('api-key') != config.web_api_key):
         logging.error("Api-Key is not correct.")
-        return jsonify({"error": "Api-Key is not correct."}), 401
+        return jsonify({"error": "API-Key is not correct."}), 401
+       
+    # 2. Retrieve Data from Request
+    data = request.get_json()
+    
+    # 3. Check that email is present
+    email = data.get("email", "").lower()
+    if not email:
+        logging.error("Email is required.")
+        return jsonify({"error": "Email is required"}), 400
+
+    # 4. Grab and process roles info
+    roles = []
+    roles_input = data.get("roles", "")
+    if roles_input:
+        for role in roles_input.split(','):
+            role = role.strip()  
+            if role in ROLE_MAP and (role not in roles):  
+                roles.append(ROLE_MAP.get(role))        
+    if len(roles) == 0: roles.append('participant') # No roles -> participant
+    
+    first_name = data.get("first_name", "Brutus")
+    last_name = data.get("last_name", "Buckeye")
+    is_capstone = data.get("is_capstone", 0)
+
+    
+    # 5. Add Registered User to Database
+    try:
+        #Add User to registrant list
+        records.add_registration(email, first_name, last_name, is_capstone, roles)
+
+        #Send back "Good" Message
+        logging.info(f"User registered successfully: {email} with roles {roles}")
+        return jsonify({"email": email, "first_name": first_name, "last_name":last_name, "is_capstone": is_capstone, "roles": roles}), 201
+    
+    except Exception as e:
+       
+        #Send Error that user being added has failed
+        logging.exception(f"An unexpected error occured while adding user to database: {e}")
+        return jsonify({"error": "An internal server error occurred."}), 500
+
 
 # Method to start a server and wait for a request
 def start():

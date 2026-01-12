@@ -4,7 +4,6 @@ venv/
 *.db
 .DS_STORE
 __pycache__
-alter_records.py
 /__pycache__
 *.pyc
 *.ppk
@@ -13,3 +12,4 @@ alter_records.py
 !.gitignore
 
 web.log
+test_scripts
