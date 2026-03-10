@@ -433,6 +433,12 @@ async def create_team(interaction: discord.Interaction, team_name: str, teammate
     for mem in members:
         if not mem:
             continue
+        if mem.id == user.id:
+            await interaction.followup.send(
+                ephemeral=True,
+                content=f"Failed to add team member. You cannot add yourself as a teammate.",
+            )
+            continue
         match can_join_team(mem, is_capstone):
             case -1 | -2:
                 await interaction.followup.send(
@@ -620,11 +626,22 @@ async def add_member(interaction: discord.Interaction, member: discord.Member): 
         return
 
     # Check if user can join the team
-    is_capstone = records.get_team(team_id)
-    match can_join_team(added_user):
-        case -1 | -2 : await interaction.followup.send(content=f"Failed to add team member. {added_user.mention} is not a verified participant."); return
-        case      -3 : await interaction.followup.send(content=f"Failed to add team member. {added_user.mention} is already on a team. To join, they must leave using /leave_team"); return
-        case      -4 : await interaction.followup.send(content=f"Failed to add team member. {added_user.mention} is {"NOT " if is_capstone else ""}registered as a capstone participant while you are {"" if is_capstone else "NOT "}registered as capstone. If this is a mistake, members can re-regsiter at {config.contact_registration_link}")
+    match can_join_team(added_user, is_capstone):
+        case -1 | -2:
+            await interaction.followup.send(
+                content=f"Failed to add team member. {added_user.mention} is not a verified participant."
+            )
+            return
+        case -3:
+            await interaction.followup.send(
+                content=f"Failed to add team member. {added_user.mention} is already on a team. To join, they must leave using /leave_team"
+            )
+            return
+        case -4:
+            await interaction.followup.send(
+                content=f"Failed to add team member. {added_user.mention} is {"NOT " if is_capstone else ""}registered as a capstone participant while you are {"" if is_capstone else "NOT "}registered as capstone. If this is a mistake, members can re-regsiter at {config.contact_registration_link}"
+            )
+            return
 
     # ------------- Happy Case --------------------
 
@@ -847,10 +864,16 @@ async def delete_team(interaction: discord.Interaction, team_role: discord.Role,
 
     # Notify team and admin about removal
     for member in members:
-        await interaction.guild.get_member(member['discord_id']).send(
-            content=f"Your team has been removed from the event. \nReason: `{reason_for_removal}`. \nYou may create a new team but continued failure to comply may result in being permanently removed")
-    
-    await interaction.followup.send(content=f"The team `<{team_name}>` has been removed and the members have been notified")
+        member_obj = interaction.guild.get_member(member["discord_id"])
+        if not member_obj:
+            continue
+        await member_obj.send(
+            content=f"Your team has been removed from the event. \nReason: `{reason_for_removal}`. \nYou may create a new team but continued failure to comply may result in being permanently removed"
+        )
+
+    await interaction.followup.send(
+        content=f"The team `<{team_name}>` has been removed and the members have been notified"
+    )
 
     # Remove channels and remove team stats from members
     await handle_team_deletion(team_id)    
