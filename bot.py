@@ -784,7 +784,7 @@ async def my_team(interaction: discord.Interaction):
     # Create and send embed with team information
     embed = create_embed(
         title=f"Your Team: {team_name}",
-        description=f"**Team Lead:** {team_lead_member.mention}\n\n**Members:**\n{member_list}",
+        description=f"**Team ID:** {team_id}\n**Team Lead:** {team_lead_member.mention}\n\n**Members:**\n{member_list}",
     )
     await interaction.followup.send(embed=embed)
 
