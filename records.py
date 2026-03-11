@@ -300,6 +300,18 @@ def get_verified_email(discord_id: int) -> str:
         row = conn.execute(f"SELECT email FROM {_VERIFIED_TABLE_NAME} WHERE discord_id = ?", (discord_id,)).fetchone()
         return row['email'] if row else None
 
+def get_verified_participants() -> list:
+    """Returns verified users who are registered as participants."""
+    with _get_connection() as conn:
+        rows = conn.execute(f"""
+            SELECT r.first_name, r.last_name, r.email
+            FROM {_VERIFIED_TABLE_NAME} v
+            JOIN {_REG_TABLE_NAME} r ON v.email = r.email
+            WHERE r.is_participant = 1
+            ORDER BY r.email
+        """).fetchall()
+        return [dict(row) for row in rows]
+
 def join_team(discord_id: int, team_id: int):
     """ Assigns a verified user to a team. """
     with _LOCK, _get_connection() as conn:

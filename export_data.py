@@ -1,14 +1,13 @@
 import csv
 import os
 
-import pandas as pd
-
 import records
 
 # For all teams in the teamDB, get teamName and all users associated with it
 # TeamData = [Team ID, TeamName, Members...]
 
-EXPORT_FILENAME = "team_export.csv"
+TEAM_EXPORT_FILENAME = "team_export.csv"
+VERIFIED_PARTICIPANTS_FILENAME = "verified_participants.csv"
 
 
 # ----------- Grab Team Data from DB ------------- #
@@ -44,6 +43,19 @@ def get_team_data():
     return team_data_list
 
 
+def get_verified_participant_data():
+    headers = ["First Name", "Last Name", "Email"]
+    participants = sorted(
+        records.get_verified_participants(),
+        key=lambda participant: participant["email"],
+    )
+    rows = [
+        [participant["first_name"], participant["last_name"], participant["email"]]
+        for participant in participants
+    ]
+    return [headers] + rows
+
+
 # ----------- Export Data to CSV --------------- #
 def export_to_csv(export_filename: str, data: list):
     # Remove file if it exists so it can be overwritten
@@ -58,34 +70,13 @@ def export_to_csv(export_filename: str, data: list):
         for row in data:
             writer.writerow(row)
 
-
-def append_to_xlsx(export_filename: str, sheets: list[str]):
-    if os.path.isfile(export_filename):
-        os.remove(export_filename)
-
-    # Create a new Excel writer object
-    with pd.ExcelWriter(export_filename, engine="xlsxwriter", mode="w") as writer:
-        # Write the CSV data to a new sheet
-        for sheet in sheets:
-            # Import csv data as sheet to excel file
-            csv_file = pd.read_csv(sheet)
-            csv_file.to_excel(writer, sheet_name=sheet.replace(".csv", ""), index=False)
-
-    # Remove CSV files
-    for file in sheets:
-        os.remove(file)
+def main():
+    export_to_csv(TEAM_EXPORT_FILENAME, get_team_data())
+    export_to_csv(
+        VERIFIED_PARTICIPANTS_FILENAME,
+        get_verified_participant_data(),
+    )
 
 
-# Retrieve Data
-team_data_list = get_team_data()
-
-
-# Compile into CSV
-sheets = []
-
-export_to_csv("team_export.csv", team_data_list)
-sheets.append("team_export.csv")
-
-
-# Compile into Excel
-# append_to_xlsx('Report.xlsx', sheets)
+if __name__ == "__main__":
+    main()
