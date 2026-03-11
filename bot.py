@@ -9,7 +9,7 @@ import random
 import smtplib
 from email.mime.text import MIMEText
 
-from typing import cast
+from typing import Union, cast
 
 #Init Bot Settings
 intents = discord.Intents.default()
@@ -283,8 +283,8 @@ async def affirm(interaction: discord.Interaction):
     await interaction.response.send_message(ephemeral=True, content=f'{random_affirm}')
 
 @app_commands.guild_only() #Makes sure no-one can verify over dm?
-@bot.tree.command(name="verify", description="Verify your Discord account for this Event")
 @app_commands.describe(email_or_code="Email Address used to Register / or / Verification Code")
+@bot.tree.command(name="verify", description="Verify your Discord account for this Event")
 async def verify(interaction: discord.Interaction, email_or_code: str): # TESTED
     """
     Verifies a user's Discord account by linking it with their reg email
@@ -516,7 +516,7 @@ async def create_team(interaction: discord.Interaction, team_name: str, teammate
     )
 
     # Respond to creator and send message to team channel
-    await interaction.followup.send(content=f'Your Team ({team_role.mention}) has successfully been created!\n Your Team Channel: {text_channel.mention}')
+    await interaction.followup.send(content=f'Your Team ({team_role.mention}) has successfully been created!\n Your Team Channel: {text_channel.mention}', ephemeral=True)
     welcome_embed = create_embed(title=f"Welcome Team #{team_id}: {team_name}!", description=f"Manage your team using `/add_member`, `/remove_member`, `leave_team`, and `/my_team`.\n\n👑 **Team Lead:** {user.mention}")
     if is_capstone:
         welcome_embed.description += "\n\u200b"
@@ -844,8 +844,8 @@ async def overify(interaction: discord.Interaction, member_to_promote: discord.M
 
 @app_commands.guild_only()
 @app_commands.default_permissions(administrator=True)
-@bot.tree.command(name="delete_team", description="Remove Team (Organizers only)") 
-async def delete_team(interaction: discord.Interaction, team_role: discord.Role, reason_for_removal: str): # TESTED
+@bot.tree.command(name="remove_team", description="Remove Team (Organizers only)") 
+async def remove_team(interaction: discord.Interaction, team_role: discord.Role, reason_for_removal: str): # TESTED
     """
     Delete a team and its associated data from the event.
 
@@ -877,6 +877,59 @@ async def delete_team(interaction: discord.Interaction, team_role: discord.Role,
 
     # Remove channels and remove team stats from members
     await handle_team_deletion(team_id)    
+
+@app_commands.guild_only()
+@app_commands.checks.has_any_role(config.discord_organizer_role_id, config.discord_all_access_pass_role_id) # Only Organizer or All-Access-Pass can View/Use
+@app_commands.describe(target="Select a Team Role OR a Team Member")
+@bot.tree.command(name="find_channel", description="Get a quick link to a team's text channel")
+async def find_channel(interaction: discord.Interaction, target: Union[discord.Role, discord.Member]):
+    
+    await interaction.response.defer(ephemeral=True)
+
+    # Retrieve the Team_ID from role
+    if isinstance(target, discord.Role):
+        team_name = target.name
+
+        # Check if role is associated with a team
+        if not records.team_exists(team_name):
+            await interaction.followup.send(
+                content=f"Team `{team_name}` cannot be found. Please use a role that is associated with a valid team",
+                ephemeral=True
+            )
+            return
+        else:
+            team_info = records.get_team(team_name)
+            text_channel = interaction.guild.get_channel(team_info['text_id'])
+            
+    
+    # Retrieve the Team_ID from user
+    elif isinstance(target, discord.Member):
+        member_id = target.id
+        team_id = records.get_user_team_id(member_id)
+
+        # Ensure User is on a Team
+        if team_id is None:
+            await interaction.followup.send(
+                content=f"User: {target.mention} is not assigned to a team. No channel can be found.",
+                ephemeral=True
+            )
+            return
+        else:
+            team_info = records.get_team(team_id)
+            text_channel = interaction.guild.get_channel(team_info['text_id'])
+
+    
+    # Send the Message
+    if text_channel:
+        await interaction.followup.send(
+            content=f"Team #{team_info['id']} - {team_info['name']}\nLink to the team's text channel: {text_channel.mention}", 
+            ephemeral=True
+        )
+    else:
+        await interaction.followup.send(
+            content="Could not find a channel associated with that target :(", 
+            ephemeral=True
+        )
 
 @app_commands.guild_only()
 @app_commands.default_permissions(administrator=True)
@@ -953,6 +1006,8 @@ async def sync(ctx: commands.Context, spec: str):
     await ctx.send("Please provide a valid spec argument (local, global, clear)")
 
 
+
+
 # When the bot is ready, this automatically runs
 @bot.event
 async def on_ready(): 
@@ -961,5 +1016,4 @@ async def on_ready():
 def start(): bot.run(config.discord_token)
 # ------------------------------------------------------------------
 
-# TODO: Allow 5 people to join a team if they are capstone
 # TODO: Rewrite web.py with new db material and same with export/import
