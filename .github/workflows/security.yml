@@ -1,4 +1,4 @@
-name: Security
+name: Python Dependency Vulnerability Scan
 
 on:
   pull_request:
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   dependency-audit:
-    name: Audit Python dependencies
+    name: Scan Python dependencies
     runs-on: ubuntu-latest
 
     steps:

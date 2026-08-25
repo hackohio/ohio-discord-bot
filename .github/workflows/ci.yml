@@ -1,4 +1,4 @@
-name: CI
+name: Build and Code Checks
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   checks:
-    name: Python checks
+    name: Install and validate Python
     runs-on: ubuntu-latest
 
     steps:

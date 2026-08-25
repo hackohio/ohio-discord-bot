@@ -1,4 +1,4 @@
-name: CodeQL
+name: CodeQL Security Analysis
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   analyze:
-    name: Analyze Python code
+    name: Analyze Python source code
     runs-on: ubuntu-latest
 
     strategy:
