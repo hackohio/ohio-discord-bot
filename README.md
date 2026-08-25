@@ -18,16 +18,18 @@ with event intake workflows.
 
 ## Run locally
 
-This project requires Python 3.12 and an organization-provided
+This project requires Python 3.12, [uv](https://docs.astral.sh/uv/), and an organization-provided
 `config.ini` in the repository root. The file contains Discord, email, and
 webhook credentials; keep it private and never commit it.
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # Windows (cmd.exe): venv\Scripts\activate.bat
-pip install -r requirements.txt
-python start.py
+uv sync
+uv run python start.py
 ```
+
+`uv sync` creates the project environment and installs the exact dependency
+versions recorded in `uv.lock`. Use `uv sync --locked` to verify that the lock
+file is current without changing it.
 
 `start.py` launches the Discord bot and the webhook server as separate
 processes. Stop both with `Ctrl+C`.

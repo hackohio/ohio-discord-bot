@@ -9,6 +9,7 @@ You will need:
 - A GitHub account. To create one, click **Sign up** in the top-right corner of any GitHub page.
 - [Git](https://git-scm.com/downloads) installed on your computer.
 - [Python](https://www.python.org/downloads/) 3.12.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) installed.
 - Basic command-line knowledge. Ask another tech committee member if you need help getting started.
 
 ## 1. Fork the repository
@@ -35,42 +36,28 @@ Download `config.ini` from the tech committee’s SharedFolder in Google Drive a
 
 > **Important:** `config.ini` contains sensitive information. Do not share it outside the organization or commit it to Git.
 
-## 4. Create and activate a virtual environment
+## 4. Install dependencies
 
 From the repository root:
 
 ```bash
-python -m venv venv
+uv sync
 ```
 
-Activate it on Windows Command Prompt:
-
-```batch
-venv\Scripts\activate.bat
-```
-
-Or on macOS and Linux:
+This creates a project virtual environment and installs the exact dependency
+versions recorded in `uv.lock`. To check that the lock file is current without
+updating it, use:
 
 ```bash
-source venv/bin/activate
+uv sync --locked
 ```
 
-If activation succeeds, your terminal prompt will include `(venv)`. See the [Python `venv` documentation](https://docs.python.org/3/library/venv.html) for other shells and details.
-
-## 5. Install dependencies
-
-With the virtual environment active:
-
-```bash
-pip install -r requirements.txt
-```
-
-## 6. Run the bot
+## 5. Run the bot
 
 Start the bot and webhook server:
 
 ```bash
-python start.py
+uv run python start.py
 ```
 
 After the bot logs in, try its slash commands in the test Discord server. Press `Ctrl+C` to stop it.

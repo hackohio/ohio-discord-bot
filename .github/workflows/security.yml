@@ -20,12 +20,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
         with:
+          version: "0.12.5"
           python-version: "3.12"
+          enable-cache: true
 
-      - name: Audit dependencies
-        uses: pypa/gh-action-pip-audit@v1.1.0
-        with:
-          inputs: requirements.txt
+      - name: Audit locked dependencies
+        run: uv run --locked --with pip-audit pip-audit --local
