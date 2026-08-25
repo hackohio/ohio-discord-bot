@@ -10,6 +10,9 @@ __pycache__
 *.csv
 .*
 !.gitignore
+!.github/
+!.github/**
+!.python-version
 
 web.log
 test_scripts

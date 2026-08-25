@@ -18,7 +18,7 @@ with event intake workflows.
 
 ## Run locally
 
-This project requires Python 3.9 or later and an organization-provided
+This project requires Python 3.12 and an organization-provided
 `config.ini` in the repository root. The file contains Discord, email, and
 webhook credentials; keep it private and never commit it.
 

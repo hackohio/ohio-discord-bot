@@ -8,7 +8,7 @@ You will need:
 
 - A GitHub account. To create one, click **Sign up** in the top-right corner of any GitHub page.
 - [Git](https://git-scm.com/downloads) installed on your computer.
-- [Python](https://www.python.org/downloads/) 3.9 or later.
+- [Python](https://www.python.org/downloads/) 3.12.
 - Basic command-line knowledge. Ask another tech committee member if you need help getting started.
 
 ## 1. Fork the repository
