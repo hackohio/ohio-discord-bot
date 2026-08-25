@@ -1,5 +1,6 @@
 .env
 venv/
+.venv/
 *.ini
 *.db
 .DS_STORE
