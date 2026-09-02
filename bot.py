@@ -845,7 +845,17 @@ async def lfg_view(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     seekers = records.get_lfg_list()
-    if not seekers:
+
+    # Only show people who are still in this server. Leaving Discord doesn't
+    # remove someone's pool row, but we don't want to list people who left.
+    present = []
+    for seeker in seekers:
+        member = interaction.guild.get_member(seeker['discord_id'])
+        if member is None:
+            continue
+        present.append((seeker, member))
+
+    if not present:
         await interaction.followup.send(embed=create_embed("Looking for a Team", "No one is currently looking for a team. Check back later, or mark yourself with `/lfg toggle`!"))
         return
 
@@ -853,12 +863,10 @@ async def lfg_view(interaction: discord.Interaction):
     lines = []
     shown = 0
     length = 0
-    for seeker in seekers:
-        member = interaction.guild.get_member(seeker['discord_id'])
-        mention = member.mention if member else f"@{seeker['username']}"
+    for seeker, member in present:
         name = seeker['first_name'] or seeker['username']
         skills = seeker['skills'] if seeker['skills'] else "_No skills listed_"
-        entry = f"**{name}** - {mention}\n> {skills}"
+        entry = f"**{name}** - {member.mention}\n> {skills}"
         if length + len(entry) + 2 > 3800:
             break
         lines.append(entry)
@@ -866,11 +874,11 @@ async def lfg_view(interaction: discord.Interaction):
         shown += 1
 
     description = "\n\n".join(lines)
-    remaining = len(seekers) - shown
+    remaining = len(present) - shown
     if remaining > 0:
         description += f"\n\n_...and {remaining} more looking. The list will shrink as teams form._"
 
-    embed = create_embed(f"Looking for a Team ({len(seekers)})", description)
+    embed = create_embed(f"Looking for a Team ({len(present)})", description)
     await interaction.followup.send(embed=embed)
 
 bot.tree.add_command(lfg_group)
