@@ -796,7 +796,7 @@ lfg_group = app_commands.Group(name="lfg", description="Find teammates when you'
 
 @lfg_group.command(name="toggle", description="Toggle whether you're looking for a team (optionally list your skills)")
 @app_commands.describe(skills="Optional: skills/interests to show others (e.g. 'React, Python, UI design')")
-async def lfg_toggle(interaction: discord.Interaction, skills: Optional[str] = None):
+async def lfg_toggle(interaction: discord.Interaction, skills: Optional[app_commands.Range[str, None, 150]] = None):
     """
     Toggles the user's "looking for a team" status in the LFG pool.
       - If not looking: adds them to the pool (blocked if they are already on a team).
