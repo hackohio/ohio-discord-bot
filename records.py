@@ -59,6 +59,7 @@ _VERIFIED_TABLE_NAME = 'verified'
 _TEAM_TABLE_NAME = 'teams'
 _CODE_TABLE_NAME = 'codes'
 _CATEGORY_BUCKET_NAME = 'category_bucket'
+_LFG_TABLE_NAME = 'lfg_pool'
 
 def _initialize_db():
 
@@ -124,6 +125,15 @@ def _initialize_db():
             CREATE TABLE IF NOT EXISTS {_CATEGORY_BUCKET_NAME} (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 discord_id INTEGER NOT NULL
+            )
+        """)
+
+        # LFG (Looking For Group) pool: a user in this table is looking for a team
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {_LFG_TABLE_NAME} (
+                discord_id INTEGER PRIMARY KEY REFERENCES {_VERIFIED_TABLE_NAME}(discord_id) ON DELETE CASCADE,
+                skills TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
@@ -495,5 +505,48 @@ def push_new_category(discord_id: int):
     with _LOCK, _get_connection() as conn:
         conn.execute(f"INSERT INTO {_CATEGORY_BUCKET_NAME} (discord_id) VALUES (?)", (discord_id,))
         conn.commit()
+
+
+# ---------------- LFG (Looking For Group) Functions ----------------
+
+def is_looking(discord_id: int) -> bool:
+    """ Returns True if the user is currently in the LFG pool (looking for a team). """
+    with _get_connection() as conn:
+        row = conn.execute(f"SELECT 1 FROM {_LFG_TABLE_NAME} WHERE discord_id = ?", (discord_id,)).fetchone()
+        return row is not None
+
+def add_to_lfg(discord_id: int, skills: str = None):
+    """ Adds a user to the LFG pool, or updates their listed skills if already in it. """
+    with _LOCK, _get_connection() as conn:
+        conn.execute(f"""
+            INSERT INTO {_LFG_TABLE_NAME} (discord_id, skills)
+            VALUES (?, ?)
+            ON CONFLICT(discord_id) DO UPDATE SET
+                skills = excluded.skills
+        """, (discord_id, skills))
+        conn.commit()
+
+def remove_from_lfg(discord_id: int):
+    """ Removes a user from the LFG pool (no longer looking). Safe to call if absent. """
+    with _LOCK, _get_connection() as conn:
+        conn.execute(f"DELETE FROM {_LFG_TABLE_NAME} WHERE discord_id = ?", (discord_id,))
+        conn.commit()
+
+def get_lfg_list() -> list:
+    """
+    Returns a list of solo hackers currently looking for a team.
+    Only includes verified users who are not already on a team (team_id IS NULL).
+    Each dict contains: discord_id, username, first_name, skills.
+    """
+    with _get_connection() as conn:
+        rows = conn.execute(f"""
+            SELECT l.discord_id, v.username, r.first_name, l.skills
+            FROM {_LFG_TABLE_NAME} l
+            JOIN {_VERIFIED_TABLE_NAME} v ON l.discord_id = v.discord_id
+            JOIN {_REG_TABLE_NAME} r ON v.email = r.email
+            WHERE v.team_id IS NULL
+            ORDER BY l.created_at ASC
+        """).fetchall()
+        return [dict(row) for row in rows]
 
 _initialize_db()

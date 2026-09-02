@@ -9,7 +9,7 @@ import random
 import smtplib
 from email.mime.text import MIMEText
 
-from typing import Union, cast
+from typing import Union, cast, Optional
 
 #Init Bot Settings
 intents = discord.Intents.default()
@@ -216,6 +216,7 @@ async def perform_team_join(member: discord.Member, team_id: int): # TESTED
     
     # DB Update
     records.join_team(member.id, team_id)
+    records.remove_from_lfg(member.id)
     
     guild = bot.get_guild(config.discord_guild_id)
     team_data = records.get_team(team_id)
@@ -787,6 +788,92 @@ async def my_team(interaction: discord.Interaction):
         description=f"**Team Lead:** {team_lead_member.mention}\n\n**Members:**\n{member_list}",
     )
     await interaction.followup.send(embed=embed)
+
+
+# ------------------- Looking For Group (LFG) ----------------------
+
+lfg_group = app_commands.Group(name="lfg", description="Find teammates when you're looking for a group", guild_only=True)
+
+@lfg_group.command(name="toggle", description="Toggle whether you're looking for a team (optionally list your skills)")
+@app_commands.describe(skills="Optional: skills/interests to show others (e.g. 'React, Python, UI design')")
+async def lfg_toggle(interaction: discord.Interaction, skills: Optional[str] = None):
+    """
+    Toggles the user's "looking for a team" status in the LFG pool.
+      - If not looking: adds them to the pool (blocked if they are already on a team).
+      - If already looking: providing skills updates their listing; otherwise removes them.
+    """
+    user = interaction.user
+    await interaction.response.defer(ephemeral=True)
+
+    # ------------- Do Validation Checks --------------------
+
+    # Must be verified to participate
+    if not records.is_verified(user.id):
+        await interaction.followup.send(content="You need to verify first! Use the `/verify` command, then try again.")
+        return
+
+    # ------------- Toggle Logic --------------------
+
+    already_looking = records.is_looking(user.id)
+
+    # Case 1: Already looking, no new skills provided -> turn OFF
+    if already_looking and not skills:
+        records.remove_from_lfg(user.id)
+        await interaction.followup.send(content="You're no longer marked as **looking for a team**. Run `/lfg toggle` again whenever you want to turn it back on.")
+        return
+
+    # Case 2: Already looking, skills provided -> update listing (stay ON)
+    if already_looking and skills:
+        records.add_to_lfg(user.id, skills)
+        await interaction.followup.send(content=f"Updated your skills to: **{skills}**\nYou're still marked as **looking for a team**.")
+        return
+
+    # Case 3: Not looking -> turn ON (but not if already on a team)
+    if records.get_user_team_id(user.id):
+        await interaction.followup.send(content="You're already on a team, so there's no need to look for one. Use `/leave_team` first if you want to find a different group.")
+        return
+
+    records.add_to_lfg(user.id, skills)
+    message = "You're now marked as **looking for a team**! Others can find you with `/lfg view`."
+    if not skills:
+        message += "\n_Tip: run `/lfg toggle` again with the `skills` option to tell teams what you bring._"
+    await interaction.followup.send(content=message)
+
+@lfg_group.command(name="view", description="See who's currently looking for a team")
+async def lfg_view(interaction: discord.Interaction):
+    """ Shows an ephemeral list of solo hackers currently looking for a team, with their skills. """
+    await interaction.response.defer(ephemeral=True)
+
+    seekers = records.get_lfg_list()
+    if not seekers:
+        await interaction.followup.send(embed=create_embed("Looking for a Team", "No one is currently looking for a team. Check back later, or mark yourself with `/lfg toggle`!"))
+        return
+
+    # Build the list, staying under Discord's embed description limit (~4096 chars)
+    lines = []
+    shown = 0
+    length = 0
+    for seeker in seekers:
+        member = interaction.guild.get_member(seeker['discord_id'])
+        mention = member.mention if member else f"@{seeker['username']}"
+        name = seeker['first_name'] or seeker['username']
+        skills = seeker['skills'] if seeker['skills'] else "_No skills listed_"
+        entry = f"**{name}** - {mention}\n> {skills}"
+        if length + len(entry) + 2 > 3800:
+            break
+        lines.append(entry)
+        length += len(entry) + 2
+        shown += 1
+
+    description = "\n\n".join(lines)
+    remaining = len(seekers) - shown
+    if remaining > 0:
+        description += f"\n\n_...and {remaining} more looking. The list will shrink as teams form._"
+
+    embed = create_embed(f"Looking for a Team ({len(seekers)})", description)
+    await interaction.followup.send(embed=embed)
+
+bot.tree.add_command(lfg_group)
 
 
 # ------------------- Admin Only Commands ----------------------
