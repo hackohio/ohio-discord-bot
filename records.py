@@ -1,6 +1,7 @@
 import logging
 import sqlite3
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +69,19 @@ def _initialize_db():
             CREATE TABLE IF NOT EXISTS {_CODE_TABLE_NAME} (
                 code TEXT PRIMARY KEY,
                 discord_id INTEGER UNIQUE NOT NULL,
-                email TEXT UNIQUE NOT NULL
+                email TEXT UNIQUE NOT NULL,
+                expires_at REAL NOT NULL
             )
         """)
+        code_columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({_CODE_TABLE_NAME})")
+        }
+        if "expires_at" not in code_columns:
+            conn.execute(
+                f"ALTER TABLE {_CODE_TABLE_NAME} "
+                "ADD COLUMN expires_at REAL NOT NULL DEFAULT 0"
+            )
 
         # 5. Category Channels Table (Only used for 1-50 category setting)
         conn.execute(f"""
@@ -533,15 +544,16 @@ def get_team_members(identifier) -> list:
 # ---------------- Code Table Functions -----------------
 
 
-def add_code(email: str, discord_id: int, code: str):
-    """Stores a generated verification code."""
+def add_code(email: str, discord_id: int, code: str, expiration_time: int):
+    """Stores a generated verification code and its expiration timestamp."""
+    expires_at = time.time() + expiration_time
     with _LOCK, _get_connection() as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO codes (code, discord_id, email) 
-            VALUES (?, ?, ?)
+            INSERT OR REPLACE INTO codes (code, discord_id, email, expires_at)
+            VALUES (?, ?, ?, ?)
         """,
-            (code, discord_id, email),
+            (code, discord_id, email, expires_at),
         )
         conn.commit()
     logger.debug("verification_code_stored email=%r discord_id=%r", email, discord_id)
@@ -555,9 +567,12 @@ def code_exists(code: str) -> bool:
 
 
 def get_value_from_code(code: str) -> dict:
-    """Retrieves the data linked to a code (Discord ID and Email)."""
+    """Retrieves the data linked to an unexpired code."""
     with _get_connection() as conn:
-        row = conn.execute("SELECT * FROM codes WHERE code = ?", (code,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM codes WHERE code = ? AND expires_at > ?",
+            (code, time.time()),
+        ).fetchone()
         return dict(row) if row else None
 
 

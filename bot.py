@@ -1,7 +1,7 @@
-import asyncio
 import functools
 import logging
 import random
+import secrets
 import smtplib
 import time
 import uuid
@@ -67,7 +67,7 @@ def generate_random_code(n):  # TESTED
         str: A random string of specified length, containing digits.
     """
     characters = "0123456789"
-    return "".join(random.choices(characters, k=n))
+    return "".join(secrets.choice(characters) for _ in range(n))
 
 
 def _log_rejection(
@@ -494,8 +494,7 @@ async def verify(interaction: discord.Interaction, email_or_code: str):  # TESTE
     2. Checks if user is already verified
     3. Checks if email is already associated with a verified account
     4. Associates the user's Discord ID with email if they are registered but not yet verified
-    5. Sends a verification code via email and waits for user to confirm
-    6. Removes expired verification codes after a specified timeout
+    5. Sends a verification code via email and stores its expiration time
 
     Args:
         ctxt (Context): The Context of the Interaction
@@ -520,16 +519,14 @@ async def verify(interaction: discord.Interaction, email_or_code: str):  # TESTE
     if email_or_code.isdigit():
         code = email_or_code
 
-        # Check that code is valid
-        if not records.code_exists(code):
+        # Check that code is valid and unexpired
+        code_info = records.get_value_from_code(code)
+        if not code_info:
             _log_rejection(interaction, "invalid_or_expired_code")
             await interaction.followup.send(
                 content="Your Verification Code is either not valid or has expired. Please request a new one.",
             )
             return
-
-        # Retrieve Message ID or Verification message
-        code_info = records.get_value_from_code(code)
 
         # Check that user_id matches user entering the code
         if code_info["discord_id"] != user.id:
@@ -588,7 +585,9 @@ async def verify(interaction: discord.Interaction, email_or_code: str):  # TESTE
             CODE = generate_random_code(6)
 
         if await send_verification_email(email, CODE, user.name):
-            records.add_code(email, user.id, CODE)
+            records.add_code(
+                email, user.id, CODE, config.email_code_expiration_time
+            )
             await interaction.followup.send(
                 content=f"Check your inbox for an email from `<{config.email_address}>` with a verification link. Please check that email and enter the code in this format \n `/verify (code)`\n\nBe sure to check your junk folder if you have trouble finding it",
             )
@@ -596,10 +595,6 @@ async def verify(interaction: discord.Interaction, email_or_code: str):  # TESTE
             await interaction.followup.send(
                 content="Failed to send verification email. Please contact an organizer for assistance.",
             )
-
-        # Wait for timeout then delete verification code
-        await asyncio.sleep(config.email_code_expiration_time)
-        records.remove_code(CODE)
 
 
 @app_commands.guild_only()
