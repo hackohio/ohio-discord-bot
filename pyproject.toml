@@ -5,9 +5,9 @@ description = "Discord bot and registration webhook for the OHI/O hackathon"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "discord.py",
-    "eventlet",
     "Flask",
     "openpyxl",
     "pandas",
+    "waitress>=3.0.2",
     "XlsxWriter",
 ]
