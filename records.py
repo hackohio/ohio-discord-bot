@@ -1,4 +1,5 @@
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -6,7 +7,7 @@ import time
 logger = logging.getLogger(__name__)
 
 
-_DATABASE_FILE = "records.db"
+_DATABASE_FILE = os.environ.get("OHIO_RECORDS_DB", "records.db")
 _LOCK = threading.Lock()
 
 _REG_TABLE_NAME = "registration"

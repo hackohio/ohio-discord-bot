@@ -360,7 +360,7 @@ def can_join_team(
         return -3
 
     # Check if user can join if a capstone team if relavent (not None)
-    if capstone_team and capstone_team != user_data["is_capstone"]:
+    if capstone_team is not None and capstone_team != user_data["is_capstone"]:
         return -4
     return 0
 

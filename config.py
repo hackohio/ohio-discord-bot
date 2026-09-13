@@ -1,11 +1,12 @@
 import configparser
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 # Init Vars
 config_data = configparser.ConfigParser()
-CONFIG_FILENAME = "config.ini"
+CONFIG_FILENAME = os.environ.get("OHIO_CONFIG_FILE", "config.ini")
 
 # Required configuration entries in _CONFIG_FILENAME, a list of tuples of
 # (section: str, option: str)

@@ -114,8 +114,9 @@ def push_user():
     if roles_input:
         for role in roles_input.split(","):
             role = role.strip()
-            if role in ROLE_MAP and (role not in roles):
-                roles.append(ROLE_MAP.get(role))
+            mapped_role = ROLE_MAP.get(role)
+            if mapped_role and mapped_role not in roles:
+                roles.append(mapped_role)
     if len(roles) == 0:
         roles.append("participant")  # No roles -> participant
 

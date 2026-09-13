@@ -32,3 +32,6 @@ jobs:
 
       - name: Check Python syntax
         run: uv run python -m compileall -q .
+
+      - name: Run unit and integration tests
+        run: uv run python -m unittest discover -s tests -v
