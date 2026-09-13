@@ -1,91 +1,84 @@
-import csv
-import os
+"""Export current team data for event organizers."""
 
-import pandas as pd
+import csv
+import logging
+import os
+import tempfile
+import time
+from pathlib import Path
 
 import records
-
-# For all teams in the teamDB, get teamName and all users associated with it
-# TeamData = [Team ID, TeamName, Members...]
+from logging_config import configure_logging
 
 EXPORT_FILENAME = "team_export.csv"
+logger = logging.getLogger(__name__)
 
 
-# ----------- Grab Team Data from DB ------------- #
 def get_team_data():
     teams = sorted(records.get_all_teams(), key=lambda team: team["id"])
-    rows: list[dict] = []
+    rows = []
     max_members = 0
 
     for team in teams:
-        team_members = records.get_team_members(team["id"])
-        member_emails = [member["email"] for member in team_members]
-        max_members = max(max_members, len(member_emails))
-        rows.append(
-            {
-                "team_id": team["id"],
-                "team_name": team["name"],
-                "member_emails": member_emails,
-            }
-        )
+        emails = [member["email"] for member in records.get_team_members(team["id"])]
+        max_members = max(max_members, len(emails))
+        rows.append((team["id"], team["name"], emails))
 
-    headers = ["Team ID", "Team Name"] + [
-        f"Member {index} Email" for index in range(1, max_members + 1)
+    data = [
+        ["Team ID", "Team Name"]
+        + [f"Member {index} Email" for index in range(1, max_members + 1)]
     ]
-    team_data_list = [headers]
-
-    for row in rows:
-        team_row = [row["team_id"], row["team_name"]]
-        member_values = row["member_emails"] + [""] * (
-            max_members - len(row["member_emails"])
-        )
-        team_data_list.append(team_row + member_values)
-
-    return team_data_list
+    for team_id, team_name, emails in rows:
+        data.append([team_id, team_name] + emails + [""] * (max_members - len(emails)))
+    return data
 
 
-# ----------- Export Data to CSV --------------- #
 def export_to_csv(export_filename: str, data: list):
-    # Remove file if it exists so it can be overwritten
-    if os.path.isfile(export_filename):
-        os.remove(export_filename)
-
-    with open(export_filename, "w", newline="", encoding="utf-8") as csv_file:
-        # Export Header Items
-        writer = csv.writer(csv_file)
-
-        # Add Rows of Data
-        for row in data:
-            writer.writerow(row)
-
-
-def append_to_xlsx(export_filename: str, sheets: list[str]):
-    if os.path.isfile(export_filename):
-        os.remove(export_filename)
-
-    # Create a new Excel writer object
-    with pd.ExcelWriter(export_filename, engine="xlsxwriter", mode="w") as writer:
-        # Write the CSV data to a new sheet
-        for sheet in sheets:
-            # Import csv data as sheet to excel file
-            csv_file = pd.read_csv(sheet)
-            csv_file.to_excel(writer, sheet_name=sheet.replace(".csv", ""), index=False)
-
-    # Remove CSV files
-    for file in sheets:
-        os.remove(file)
+    """Write CSV atomically so failure does not corrupt an earlier export."""
+    destination = Path(export_filename)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            newline="",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as csv_file:
+            temporary_name = csv_file.name
+            csv.writer(csv_file).writerows(data)
+        os.replace(temporary_name, destination)
+    except Exception:
+        if temporary_name:
+            Path(temporary_name).unlink(missing_ok=True)
+        raise
 
 
-# Retrieve Data
-team_data_list = get_team_data()
+def main() -> int:
+    configure_logging("export")
+    started_at = time.monotonic()
+    logger.info("export_started destination=%r", EXPORT_FILENAME)
+    try:
+        team_data = get_team_data()
+        export_to_csv(EXPORT_FILENAME, team_data)
+    except Exception:
+        logger.exception("export_failed destination=%r", EXPORT_FILENAME)
+        print("ERROR: Export failed. See logs/export.log for details.")
+        return 1
+
+    team_count = len(team_data) - 1
+    logger.info(
+        "export_completed destination=%r team_count=%r duration_ms=%r",
+        EXPORT_FILENAME,
+        team_count,
+        round((time.monotonic() - started_at) * 1000, 3),
+    )
+    print(f"Exported {team_count} teams to {EXPORT_FILENAME}")
+    return 0
 
 
-# Compile into CSV
-sheets = []
-
-export_to_csv("team_export.csv", team_data_list)
-sheets.append("team_export.csv")
-
-
-# Compile into Excel
-# append_to_xlsx('Report.xlsx', sheets)
+if __name__ == "__main__":
+    raise SystemExit(main())
