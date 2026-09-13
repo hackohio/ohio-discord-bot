@@ -1,0 +1,144 @@
+name: Start bot
+
+# Creates the Lightsail server and starts the bot on it.
+# Run from the Actions tab: "Start bot" -> "Run workflow".
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit of the bot code to run
+        type: string
+        default: main
+      restore_db:
+        description: Restore the most recent records.db backup from S3 (leave off for a fresh event)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Start and Stop share this group so they can never run at the same time.
+concurrency:
+  group: bot-infra
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  start:
+    name: Create server and start bot
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Look up bucket names
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          echo "TF_STATE_BUCKET=ohio-discord-bot-tfstate-${account_id}" >> "$GITHUB_ENV"
+          echo "BACKUP_BUCKET=ohio-discord-bot-backups-${account_id}" >> "$GITHUB_ENV"
+
+      - name: Read webhook port from config.ini
+        env:
+          CONFIG_INI: ${{ secrets.CONFIG_INI }}
+        run: |
+          if [ -z "$CONFIG_INI" ]; then
+            echo "::error::The CONFIG_INI secret is missing. Paste the contents of config.ini into it."
+            exit 1
+          fi
+          port="$(python3 -c 'import configparser, os; c = configparser.ConfigParser(); c.read_string(os.environ["CONFIG_INI"]); print(c.getint("web", "port"))')"
+          echo "TF_VAR_web_port=${port}" >> "$GITHUB_ENV"
+
+      - name: Install SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_bot
+          chmod 600 ~/.ssh/id_bot
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "<2.0.0"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra/terraform
+        run: terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="region=${AWS_REGION}"
+
+      - name: Create server (terraform apply)
+        working-directory: infra/terraform
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: |
+          terraform apply -auto-approve
+          echo "BOT_IP=$(terraform output -raw public_ip)" >> "$GITHUB_ENV"
+          echo "WEBHOOK_URL=$(terraform output -raw webhook_url)" >> "$GITHUB_ENV"
+
+      - name: Download database backup
+        if: inputs.restore_db
+        run: |
+          if aws s3api head-object --bucket "$BACKUP_BUCKET" --key latest.db > /dev/null 2>&1; then
+            aws s3 cp "s3://${BACKUP_BUCKET}/latest.db" "$RUNNER_TEMP/records.db"
+            echo "RESTORE_DB_FILE=$RUNNER_TEMP/records.db" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No backup found in s3://${BACKUP_BUCKET}/latest.db. Starting with a fresh database."
+          fi
+
+      # GitHub's Ubuntu runners come with Ansible preinstalled; only install if it's missing.
+      - name: Install Ansible
+        run: command -v ansible-playbook || pipx install ansible-core
+
+      - name: Configure server and start bot (ansible)
+        working-directory: infra/ansible
+        env:
+          CONFIG_INI: ${{ secrets.CONFIG_INI }}
+          REPO_REF: ${{ inputs.ref }}
+        run: |
+          printf '[bot]\n%s ansible_user=ubuntu ansible_ssh_private_key_file=%s\n' "$BOT_IP" "$HOME/.ssh/id_bot" > inventory.ini
+          ansible-playbook -i inventory.ini playbook.yml \
+            -e "repo_url=https://github.com/${GITHUB_REPOSITORY}.git" \
+            -e "repo_ref=${REPO_REF}" \
+            -e "web_port=${TF_VAR_web_port}" \
+            -e "restore_db_file=${RESTORE_DB_FILE:-}"
+
+      - name: Summary
+        env:
+          REPO_REF: ${{ inputs.ref }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Bot is running
+          | | |
+          |---|---|
+          | Server IP | \`${BOT_IP}\` |
+          | Webhook URL | \`${WEBHOOK_URL}\` |
+          | Code version | \`${REPO_REF}\` |
+
+          Update the registration system to send to the webhook URL above (it changes every deploy).
+
+          **The server costs money while it exists. Run the "Stop bot" workflow when the event is over.**
+          EOF
+
+      - name: Warn about a half-created server
+        if: failure()
+        run: |
+          echo "## Start failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "A server may already have been created (and is being billed). Fix the error above and re-run **Start bot**, or run **Stop bot** to delete it." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove secrets from runner
+        if: always()
+        run: rm -f ~/.ssh/id_bot "$RUNNER_TEMP/records.db" infra/ansible/inventory.ini

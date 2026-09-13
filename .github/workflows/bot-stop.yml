@@ -1,0 +1,112 @@
+name: Stop bot
+
+# Backs up records.db to S3 (optional) and deletes the Lightsail server so it
+# stops costing money. Run from the Actions tab: "Stop bot" -> "Run workflow".
+
+on:
+  workflow_dispatch:
+    inputs:
+      backup_db:
+        description: Save records.db to S3 before deleting the server (recommended)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bot-infra
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  stop:
+    name: Back up and delete server
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Look up bucket names
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          echo "TF_STATE_BUCKET=ohio-discord-bot-tfstate-${account_id}" >> "$GITHUB_ENV"
+          echo "BACKUP_BUCKET=ohio-discord-bot-backups-${account_id}" >> "$GITHUB_ENV"
+
+      - name: Install SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_bot
+          chmod 600 ~/.ssh/id_bot
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "<2.0.0"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra/terraform
+        run: terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="region=${AWS_REGION}"
+
+      - name: Find the running server
+        working-directory: infra/terraform
+        run: |
+          ip="$(terraform output -raw public_ip 2> /dev/null || true)"
+          echo "BOT_IP=${ip}" >> "$GITHUB_ENV"
+          if [ -z "$ip" ]; then
+            echo "::notice::No server found in Terraform state. Nothing to back up."
+          fi
+
+      # If this step fails, the job stops here and the server is NOT deleted, so
+      # no data is lost. If the server is broken and you don't need the data,
+      # re-run with the backup checkbox unticked.
+      - name: Back up records.db to S3
+        if: inputs.backup_db && env.BOT_IP != ''
+        run: |
+          ssh_opts=(-i ~/.ssh/id_bot -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20)
+          db=/opt/ohio-discord-bot/records.db
+
+          # Stop the bot first so the database isn't being written mid-copy.
+          ssh "${ssh_opts[@]}" "ubuntu@${BOT_IP}" 'sudo systemctl stop ohio-bot || true'
+
+          if ! ssh "${ssh_opts[@]}" "ubuntu@${BOT_IP}" "sudo test -f ${db}"; then
+            echo "::warning::No records.db on the server. Nothing to back up."
+            exit 0
+          fi
+
+          ssh "${ssh_opts[@]}" "ubuntu@${BOT_IP}" "sudo cat ${db}" > "$RUNNER_TEMP/records.db"
+          ts="$(date -u +%Y%m%dT%H%M%SZ)"
+          aws s3 cp "$RUNNER_TEMP/records.db" "s3://${BACKUP_BUCKET}/records-${ts}.db"
+          aws s3 cp "$RUNNER_TEMP/records.db" "s3://${BACKUP_BUCKET}/latest.db"
+          echo "Database backed up to \`s3://${BACKUP_BUCKET}/records-${ts}.db\` (also saved as \`latest.db\`)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete server (terraform destroy)
+        working-directory: infra/terraform
+        env:
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: terraform destroy -auto-approve
+
+      - name: Summary
+        run: |
+          echo "## Bot stopped" >> "$GITHUB_STEP_SUMMARY"
+          echo "The Lightsail server has been deleted. Run **Start bot** next time you need it." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove secrets from runner
+        if: always()
+        run: rm -f ~/.ssh/id_bot "$RUNNER_TEMP/records.db"

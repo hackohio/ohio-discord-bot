@@ -1,0 +1,164 @@
+# Turns a blank Ubuntu Lightsail server into a running bot.
+# The "Start bot" GitHub workflow runs this; it can also be run by hand from
+# Linux/WSL:
+#   CONFIG_INI="$(cat config.ini)" ansible-playbook -i inventory.ini playbook.yml -e web_port=5000
+
+- name: Deploy OHI/O Discord bot
+  hosts: bot
+  become: true
+
+  vars:
+    app_user: bot
+    app_home: /var/lib/ohio-bot
+    app_dir: /opt/ohio-discord-bot
+    repo_url: https://github.com/hackohio/ohio-discord-bot.git
+    repo_ref: main
+    uv_version: "0.12.5" # keep in sync with .github/workflows/ci.yml
+    web_port: 5000
+    config_ini: "{{ lookup('ansible.builtin.env', 'CONFIG_INI') }}"
+    restore_db_file: "" # path on the machine running Ansible; empty = start with a fresh database
+
+  pre_tasks:
+    - name: Wait for the new server to accept SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Wait for first-boot setup (cloud-init) to finish
+      ansible.builtin.command: cloud-init status --wait
+      register: cloud_init
+      changed_when: false
+      failed_when: cloud_init.rc not in [0, 2] # 2 = finished with non-fatal warnings
+
+    - name: Make sure config.ini was provided
+      ansible.builtin.assert:
+        that: config_ini | length > 0
+        fail_msg: CONFIG_INI is empty. Add the contents of config.ini as the CONFIG_INI GitHub secret.
+        quiet: true
+
+  tasks:
+    # The nano plan has 0.5 GB RAM and start.py runs two Python processes, so
+    # add swap as a safety net against out-of-memory crashes.
+    - name: Create 1 GB swap file
+      ansible.builtin.shell: |
+        fallocate -l 1G /swapfile
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+      args:
+        creates: /swapfile
+
+    - name: Keep swap enabled after reboot
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        line: "/swapfile none swap sw 0 0"
+
+    - name: Install system packages
+      ansible.builtin.apt:
+        name: [git, acl, sqlite3]
+        update_cache: true
+        lock_timeout: 300 # first boot often runs unattended-upgrades, which holds the apt lock
+
+    - name: Install uv
+      ansible.builtin.unarchive:
+        src: "https://github.com/astral-sh/uv/releases/download/{{ uv_version }}/uv-x86_64-unknown-linux-gnu.tar.gz"
+        remote_src: true
+        dest: /usr/local/bin
+        extra_opts: [--strip-components=1]
+        creates: /usr/local/bin/uv
+
+    - name: Create the bot user
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        system: true
+        home: "{{ app_home }}"
+        create_home: true
+        shell: /usr/sbin/nologin
+
+    - name: Create the app directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Check out the bot code
+      become_user: "{{ app_user }}"
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_dir }}"
+        version: "{{ repo_ref }}"
+        force: true
+      notify: Restart bot
+
+    - name: Write config.ini
+      ansible.builtin.copy:
+        content: "{{ config_ini }}\n"
+        dest: "{{ app_dir }}/config.ini"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0600"
+      no_log: true
+      notify: Restart bot
+
+    - name: Restore records.db from backup
+      when: restore_db_file | length > 0
+      block:
+        - name: Stop the bot before replacing its database
+          ansible.builtin.systemd_service:
+            name: ohio-bot
+            state: stopped
+          failed_when: false # not installed yet on a fresh server
+
+        - name: Upload records.db
+          ansible.builtin.copy:
+            src: "{{ restore_db_file }}"
+            dest: "{{ app_dir }}/records.db"
+            owner: "{{ app_user }}"
+            group: "{{ app_user }}"
+            mode: "0600"
+          notify: Restart bot
+
+    - name: Install Python and dependencies from uv.lock
+      become_user: "{{ app_user }}"
+      ansible.builtin.command: /usr/local/bin/uv sync --locked
+      args:
+        chdir: "{{ app_dir }}"
+      environment:
+        HOME: "{{ app_home }}"
+      register: uv_sync
+      changed_when: "'Installed' in uv_sync.stderr"
+
+    - name: Install the systemd service
+      ansible.builtin.template:
+        src: templates/ohio-bot.service.j2
+        dest: /etc/systemd/system/ohio-bot.service
+        mode: "0644"
+      notify: Restart bot
+
+    - name: Enable and start the bot
+      ansible.builtin.systemd_service:
+        name: ohio-bot
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Apply pending restarts
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for the webhook to start listening
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ web_port }}"
+        timeout: 120
+
+    - name: Confirm the service is still running
+      ansible.builtin.command: systemctl is-active ohio-bot
+      changed_when: false
+
+  handlers:
+    - name: Restart bot
+      ansible.builtin.systemd_service:
+        name: ohio-bot
+        state: restarted
+        daemon_reload: true

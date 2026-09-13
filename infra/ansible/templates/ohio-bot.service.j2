@@ -1,0 +1,16 @@
+[Unit]
+Description=OHI/O Discord bot and registration webhook
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_dir }}
+Environment=HOME={{ app_home }}
+ExecStart=/usr/local/bin/uv run --frozen python start.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

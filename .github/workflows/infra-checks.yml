@@ -1,0 +1,64 @@
+name: Infra checks
+
+# Catches Terraform/Ansible mistakes on pull requests, without touching AWS.
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/bot-*.yml"
+      - ".github/workflows/infra-checks.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/bot-*.yml"
+      - ".github/workflows/infra-checks.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    name: Terraform fmt and validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "<2.0.0"
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive -diff infra
+
+      - name: Validate
+        run: |
+          for dir in infra/terraform infra/bootstrap; do
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+          done
+
+  ansible:
+    name: Ansible syntax check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # GitHub's Ubuntu runners come with Ansible preinstalled; only install if it's missing.
+      - name: Install Ansible
+        run: command -v ansible-playbook || pipx install ansible-core
+
+      - name: Syntax check
+        working-directory: infra/ansible
+        env:
+          CONFIG_INI: placeholder
+        run: |
+          printf '[bot]\nplaceholder\n' > inventory.ini
+          ansible-playbook -i inventory.ini playbook.yml --syntax-check
