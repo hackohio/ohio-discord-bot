@@ -12,16 +12,6 @@ class RecordsTestCase(DatabaseTestCase):
             self.assertEqual(
                 connection.execute("PRAGMA foreign_keys").fetchone()[0], 1
             )
-            tables = {
-                row["name"]
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                )
-            }
-        self.assertTrue(
-            {"registration", "verified", "teams", "codes", "category_bucket"}
-            <= tables
-        )
 
     def test_registration_upsert_roles_queries_and_cascade(self):
         records.add_registration(

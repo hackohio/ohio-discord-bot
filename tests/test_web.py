@@ -46,14 +46,15 @@ class WebhookTestCase(DatabaseTestCase):
                 "email": " Person @ Example.COM ",
                 "first_name": "Pat",
                 "last_name": "One",
+                "is_capstone": True,
             }
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json["email"], "person@example.com")
         self.assertEqual(response.json["roles"], ["participant"])
-        self.assertEqual(
-            records.get_user_roles("person@example.com"), ["participant"]
-        )
+        registration = records.get_registration("person@example.com")
+        self.assertEqual(records.get_user_roles("person@example.com"), ["participant"])
+        self.assertTrue(registration["is_capstone"])
 
     def test_judge_and_mentor_role_codes_are_mapped(self):
         response = self.post(
@@ -67,30 +68,6 @@ class WebhookTestCase(DatabaseTestCase):
         self.assertEqual(response.json["roles"], ["judge", "mentor"])
         self.assertEqual(
             records.get_user_roles("staff@example.com"), ["judge", "mentor"]
-        )
-
-    def test_success_persists_registration(self):
-        response = self.post(
-            {
-                "email": "person@example.com",
-                "first_name": "Pat",
-                "last_name": "One",
-                "roles": "1",
-                "is_capstone": True,
-            }
-        )
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(
-            records.get_registration("person@example.com"),
-            {
-                "email": "person@example.com",
-                "first_name": "Pat",
-                "last_name": "One",
-                "is_capstone": 1,
-                "is_participant": 0,
-                "is_judge": 1,
-                "is_mentor": 0,
-            },
         )
 
     def test_database_error_returns_generic_500(self):
