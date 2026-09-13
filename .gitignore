@@ -15,5 +15,6 @@ __pycache__
 !.github/**
 !.python-version
 
-web.log
+/logs/
+*.log*
 test_scripts
