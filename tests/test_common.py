@@ -1,48 +1,46 @@
 from types import SimpleNamespace
 import unittest
 
-import discord
-from discord import app_commands
 from discord.ext import commands
 
 from discord_bot.common import audit_command
 
 
 class AuditCommandTestCase(unittest.IsolatedAsyncioTestCase):
-    async def test_audit_command_supports_cog_app_and_hybrid_commands(self):
+    async def test_audit_command_logs_cog_and_context_callbacks(self):
         class AuditCog(commands.Cog):
-            def __init__(self, bot):
-                self.bot = bot
-                self.app_called = False
-                self.hybrid_called = False
+            def __init__(self):
+                self.called = False
 
-            @app_commands.command(name="audit_app")
             @audit_command
             async def audit_app(self, interaction):
-                self.app_called = True
+                self.called = True
+                return "app result"
 
-            @commands.hybrid_command(name="audit_hybrid")
-            @audit_command
-            async def audit_hybrid(self, ctx):
-                self.hybrid_called = True
+        @audit_command
+        async def audit_hybrid(ctx):
+            return "hybrid result"
 
-        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
-        try:
-            cog = AuditCog(bot)
-            await bot.add_cog(cog)
-            actor = SimpleNamespace(id=7, name="tester")
-            guild = SimpleNamespace(id=99)
-            interaction = SimpleNamespace(id=1, user=actor, guild=guild)
-            context = SimpleNamespace(id=2, author=actor, guild=guild)
+        cog = AuditCog()
+        guild = SimpleNamespace(id=99)
+        interaction = SimpleNamespace(
+            id=1,
+            user=SimpleNamespace(id=7, name="app-user"),
+            guild=guild,
+        )
+        context = SimpleNamespace(
+            id=2,
+            author=SimpleNamespace(id=8, name="hybrid-user"),
+            guild=guild,
+        )
 
-            with self.assertLogs("discord_bot.common", level="INFO") as logs:
-                await bot.tree.get_command("audit_app").callback(
-                    cog, interaction
-                )
-                await bot.get_command("audit_hybrid").callback(cog, context)
+        with self.assertLogs("discord_bot.common", level="INFO") as logs:
+            self.assertEqual(await cog.audit_app(interaction), "app result")
+            self.assertEqual(await audit_hybrid(context), "hybrid result")
 
-            self.assertTrue(cog.app_called)
-            self.assertTrue(cog.hybrid_called)
-            self.assertIn("'actor_id': 7", " ".join(logs.output))
-        finally:
-            await bot.close()
+        rendered = " ".join(logs.output)
+        self.assertTrue(cog.called)
+        self.assertIn("'actor_id': 7", rendered)
+        self.assertIn("'actor_id': 8", rendered)
+        self.assertIn("command_started", rendered)
+        self.assertIn("command_finished", rendered)

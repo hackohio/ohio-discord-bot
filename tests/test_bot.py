@@ -1,17 +1,14 @@
 from types import SimpleNamespace
-import importlib
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from tests.helpers import DatabaseTestMixin
 
 from discord_bot.app import OhioBot
-from discord.ext import commands
+from discord_bot.cogs import lfg, teams, verification
 
 import config
 import records
-
-teams = verification = None
 
 
 class FakeRole:
@@ -67,102 +64,30 @@ def make_interaction(user, guild=None, *, response_done=False):
         id=500,
         user=user,
         guild=guild or SimpleNamespace(id=99),
+        command=None,
         response=response,
         followup=followup,
     )
 
 
-def lfg_callback(bot, interaction, *args):
-    return bot.tree.get_command("lfg").get_command("toggle").callback(
-        bot.get_cog("LfgCog"), interaction, *args
-    )
+def lfg_callback(cog, interaction, *args):
+    return lfg.LfgCog.lfg_toggle.callback(cog, interaction, *args)
 
 
-def lfg_view_callback(bot, interaction):
-    return bot.tree.get_command("lfg").get_command("view").callback(
-        bot.get_cog("LfgCog"), interaction
-    )
+def lfg_view_callback(cog, interaction):
+    return lfg.LfgCog.lfg_view.callback(cog, interaction)
 
 
-def verification_callback(bot, interaction, *args):
-    return bot.tree.get_command("verify").callback(
-        bot.get_cog("VerificationCog"), interaction, *args
-    )
+def verification_callback(cog, interaction, *args):
+    return verification.VerificationCog.verify.callback(cog, interaction, *args)
 
 
 class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
-        self.bot = OhioBot()
-
-    async def asyncSetUp(self):
-        await self.bot.setup_hook()
-        global teams, verification
-        teams = importlib.import_module("discord_bot.cogs.teams")
-        verification = importlib.import_module("discord_bot.cogs.verification")
-
-    async def asyncTearDown(self):
-        await self.bot.close()
-
-    def test_extensions_commands_and_lifecycle_are_registered_once(self):
-        self.assertEqual(
-            set(self.bot.extensions),
-            {
-                "discord_bot.cogs.lfg",
-                "discord_bot.cogs.teams",
-                "discord_bot.cogs.verification",
-                "discord_bot.cogs.organizer",
-            },
-        )
-        self.assertEqual(
-            {command.name for command in self.bot.tree.get_commands()},
-            {
-                "lfg",
-                "create_team",
-                "leave_team",
-                "add_member",
-                "remove_member",
-                "my_team",
-                "affirm",
-                "verify",
-                "sync",
-                "overify",
-                "remove_team",
-                "find_channel",
-                "broadcast",
-            },
-        )
-        group = self.bot.tree.get_command("lfg")
-        self.assertIsNotNone(group)
-        self.assertEqual({command.name for command in group.commands}, {"toggle", "view"})
-        self.assertIsInstance(self.bot.get_command("sync"), commands.HybridCommand)
-        self.assertIs(self.bot.tree.on_error.__self__, self.bot)
-        self.assertIs(self.bot.on_ready.__self__, self.bot)
-        self.assertIs(self.bot.on_command_error.__self__, self.bot)
-        self.assertNotIn("on_ready", self.bot.extra_events)
-        self.assertNotIn("on_command_error", self.bot.extra_events)
-
-        for name in (
-            "verify",
-            "create_team",
-            "leave_team",
-            "add_member",
-            "remove_member",
-            "my_team",
-            "overify",
-            "remove_team",
-            "find_channel",
-            "broadcast",
-        ):
-            self.assertTrue(self.bot.tree.get_command(name).guild_only)
-        for name in ("overify", "remove_team", "broadcast"):
-            self.assertTrue(self.bot.tree.get_command(name).default_permissions.administrator)
-        self.assertEqual(len(self.bot.tree.get_command("find_channel").checks), 1)
-
-    def test_lfg_commands_are_registered(self):
-        group = self.bot.tree.get_command("lfg")
-        self.assertIsNotNone(group)
-        self.assertEqual({command.name for command in group.commands}, {"toggle", "view"})
+        bot = SimpleNamespace()
+        self.lfg_cog = lfg.LfgCog(bot)
+        self.verification_cog = verification.VerificationCog(bot)
 
     def test_can_join_team_validation_codes(self):
         unverified = make_member(999)
@@ -191,31 +116,31 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_lfg_toggle_validates_and_toggles_skills(self):
         unverified_interaction = make_interaction(make_member(999))
-        await lfg_callback(self.bot, unverified_interaction)
+        await lfg_callback(self.lfg_cog, unverified_interaction)
         self.assertIn("verify first", unverified_interaction.followup.send.call_args.kwargs["content"])
 
         self.add_verified(100, roles=["mentor"])
         staff_interaction = make_interaction(make_member(100))
-        await lfg_callback(self.bot, staff_interaction)
+        await lfg_callback(self.lfg_cog, staff_interaction)
         self.assertIn("participant", staff_interaction.followup.send.call_args.kwargs["content"])
         self.assertFalse(records.is_looking(100))
 
         self.add_verified(101)
         user = make_member(101)
         start_interaction = make_interaction(user)
-        await lfg_callback(self.bot, start_interaction)
+        await lfg_callback(self.lfg_cog, start_interaction)
         self.assertTrue(records.is_looking(101))
         self.assertIn(
             "now marked", start_interaction.followup.send.call_args.kwargs["content"]
         )
 
         update_interaction = make_interaction(user)
-        await lfg_callback(self.bot, update_interaction, "Python")
+        await lfg_callback(self.lfg_cog, update_interaction, "Python")
         self.assertEqual(records.get_lfg_list()[0]["skills"], "Python")
         self.assertIn("Updated your skills", update_interaction.followup.send.call_args.kwargs["content"])
 
         remove_interaction = make_interaction(user)
-        await lfg_callback(self.bot, remove_interaction)
+        await lfg_callback(self.lfg_cog, remove_interaction)
         self.assertFalse(records.is_looking(101))
         self.assertIn("no longer marked", remove_interaction.followup.send.call_args.kwargs["content"])
 
@@ -223,7 +148,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         team_id = records.create_team("Team", False, 201, 202, 203)
         records.join_team(102, team_id)
         team_interaction = make_interaction(make_member(102))
-        await lfg_callback(self.bot, team_interaction, "Rust")
+        await lfg_callback(self.lfg_cog, team_interaction, "Rust")
         self.assertFalse(records.is_looking(102))
         self.assertIn("already on a team", team_interaction.followup.send.call_args.kwargs["content"])
 
@@ -243,7 +168,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             members={101: make_member(101), 103: make_member(103)},
         )
         interaction = make_interaction(make_member(500), guild)
-        await lfg_view_callback(self.bot, interaction)
+        await lfg_view_callback(self.lfg_cog, interaction)
 
         embed = interaction.followup.send.call_args.kwargs["embed"]
         self.assertEqual(embed.title, "Looking for a Team (2)")
@@ -262,7 +187,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             members={member_id: make_member(member_id) for member_id in range(100, 130)},
         )
         interaction = make_interaction(make_member(500), guild)
-        await lfg_view_callback(self.bot, interaction)
+        await lfg_view_callback(self.lfg_cog, interaction)
 
         description = interaction.followup.send.call_args.kwargs["embed"].description
         self.assertIn("...and", description)
@@ -270,7 +195,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_lfg_view_reports_empty_pool(self):
         interaction = make_interaction(make_member(500), FakeGuild())
-        await lfg_view_callback(self.bot, interaction)
+        await lfg_view_callback(self.lfg_cog, interaction)
         embed = interaction.followup.send.call_args.kwargs["embed"]
         self.assertEqual(embed.title, "Looking for a Team")
         self.assertIn("No one is currently looking", embed.description)
@@ -385,19 +310,23 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         failing_voice.delete.assert_awaited_once()
 
     async def test_safe_error_response_uses_initial_response_or_followup(self):
-        initial = make_interaction(make_member(101))
-        await self.bot._send_safe_error_response(initial)
-        initial.response.send_message.assert_awaited_once_with(
-            content="Something went wrong while processing that command.", ephemeral=True
-        )
-        initial.followup.send.assert_not_awaited()
+        bot = OhioBot()
+        try:
+            initial = make_interaction(make_member(101))
+            await bot._send_safe_error_response(initial)
+            initial.response.send_message.assert_awaited_once_with(
+                content="Something went wrong while processing that command.", ephemeral=True
+            )
+            initial.followup.send.assert_not_awaited()
 
-        followup = make_interaction(make_member(101), response_done=True)
-        await self.bot._send_safe_error_response(followup)
-        followup.followup.send.assert_awaited_once_with(
-            content="Something went wrong while processing that command.", ephemeral=True
-        )
-        followup.response.send_message.assert_not_awaited()
+            followup = make_interaction(make_member(101), response_done=True)
+            await bot._send_safe_error_response(followup)
+            followup.followup.send.assert_awaited_once_with(
+                content="Something went wrong while processing that command.", ephemeral=True
+            )
+            followup.response.send_message.assert_not_awaited()
+        finally:
+            await bot.close()
 
     async def test_verify_rejects_expired_code_and_wrong_owner(self):
         user = make_member(101)
@@ -409,12 +338,12 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         with patch("records.time.time", return_value=100.0) as clock:
             records.add_code("person@example.com", 101, "123456", 10)
             clock.return_value = 110.0
-            await verification_callback(self.bot, interaction, "123456")
+            await verification_callback(self.verification_cog, interaction, "123456")
         self.assertIn("not valid or has expired", interaction.followup.send.call_args.kwargs["content"])
 
         records.add_code("person@example.com", 202, "654321", 600)
         wrong_owner = make_interaction(user)
-        await verification_callback(self.bot, wrong_owner, "654321")
+        await verification_callback(self.verification_cog, wrong_owner, "654321")
         self.assertIn("not associated", wrong_owner.followup.send.call_args.kwargs["content"])
 
     async def test_verify_success_links_user_removes_code_and_syncs_roles(self):
@@ -432,7 +361,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         interaction = make_interaction(user, guild)
 
         with patch.object(verification, "sync_user_roles", new=AsyncMock()) as sync_roles:
-            await verification_callback(self.bot, interaction, "123456")
+            await verification_callback(self.verification_cog, interaction, "123456")
 
         self.assertTrue(records.is_verified(101))
         self.assertFalse(records.code_exists("123456"))

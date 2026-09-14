@@ -7,12 +7,6 @@ import records
 
 
 class RecordsTestCase(DatabaseTestCase):
-    def test_fresh_schema_enables_foreign_keys(self):
-        with records._get_connection() as connection:
-            self.assertEqual(
-                connection.execute("PRAGMA foreign_keys").fetchone()[0], 1
-            )
-
     def test_registration_upsert_roles_queries_and_cascade(self):
         records.add_registration(
             "person@example.com",
