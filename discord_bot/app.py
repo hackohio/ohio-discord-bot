@@ -49,7 +49,7 @@ class OhioBot(commands.Bot):
         except Exception:
             logger.exception(
                 "error_response_failed interaction_id=%r",
-                getattr(interaction, "id", None),
+                interaction.id,
             )
 
     async def on_application_command_error(
@@ -61,10 +61,10 @@ class OhioBot(commands.Bot):
         ):
             _log_rejection(interaction, type(error).__name__)
         else:
-            command = getattr(interaction, "command", None)
+            command = interaction.command
             logger.error(
                 "application_command_failed command=%r interaction_id=%r",
-                getattr(command, "qualified_name", None),
+                command.qualified_name if command else None,
                 interaction.id,
                 exc_info=original,
             )
@@ -74,10 +74,11 @@ class OhioBot(commands.Bot):
         self, ctx: commands.Context, error: commands.CommandError
     ):
         original = getattr(error, "original", error)
+        command = ctx.command
         logger.error(
             "hybrid_command_failed command=%r actor_id=%r",
-            getattr(ctx.command, "qualified_name", None),
-            getattr(ctx.author, "id", None),
+            command.qualified_name if command else None,
+            ctx.author.id,
             exc_info=original,
         )
         try:
@@ -85,14 +86,15 @@ class OhioBot(commands.Bot):
         except Exception:
             logger.exception(
                 "error_response_failed command=%r",
-                getattr(ctx.command, "qualified_name", None),
+                command.qualified_name if command else None,
             )
 
     async def on_ready(self):
+        user = self.user
         logger.info(
             "bot_ready bot_id=%r bot_username=%r guild_id=%r",
-            getattr(self.user, "id", None),
-            getattr(self.user, "name", None),
+            user.id if user else None,
+            user.name if user else None,
             config.discord_guild_id,
         )
 
