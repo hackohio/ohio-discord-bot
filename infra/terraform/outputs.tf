@@ -5,5 +5,5 @@ output "public_ip" {
 
 output "webhook_url" {
   description = "URL to give the registration/intake system."
-  value       = "http://${aws_lightsail_instance.bot.public_ip_address}:${var.web_port}/post/user"
+  value       = "https://${aws_lightsail_instance.bot.public_ip_address}/post/user"
 }

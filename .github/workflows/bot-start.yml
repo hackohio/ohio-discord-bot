@@ -65,7 +65,7 @@ jobs:
           echo "TF_STATE_BUCKET=ohio-discord-bot-tfstate-${account_id}" >> "$GITHUB_ENV"
           echo "BACKUP_BUCKET=ohio-discord-bot-backups-${account_id}" >> "$GITHUB_ENV"
 
-      - name: Read webhook port from config.ini
+      - name: Read internal webhook port from config.ini
         env:
           CONFIG_INI: ${{ secrets.CONFIG_INI }}
         run: |
@@ -74,7 +74,7 @@ jobs:
             exit 1
           fi
           port="$(python3 -c 'import configparser, os; c = configparser.ConfigParser(); c.read_string(os.environ["CONFIG_INI"]); print(c.getint("web", "port"))')"
-          echo "TF_VAR_web_port=${port}" >> "$GITHUB_ENV"
+          echo "WEB_PORT=${port}" >> "$GITHUB_ENV"
 
       - name: Install SSH key
         env:
@@ -127,8 +127,24 @@ jobs:
           ansible-playbook -i inventory.ini playbook.yml \
             -e "repo_url=https://github.com/${GITHUB_REPOSITORY}.git" \
             -e "repo_ref=${REPO_REF}" \
-            -e "web_port=${TF_VAR_web_port}" \
+            -e "web_port=${WEB_PORT}" \
+            -e "public_ip=${BOT_IP}" \
             -e "restore_db_file=${RESTORE_DB_FILE:-}"
+
+      - name: Verify the HTTPS webhook
+        run: |
+          for attempt in {1..24}; do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --max-time 10 -X POST "$WEBHOOK_URL" \
+              -H 'api-key: wrong' -H 'Content-Type: application/json' -d '{}' || true)"
+            if [ "$status" = 401 ]; then
+              exit 0
+            fi
+            echo "Webhook returned ${status:-no response}; retrying..."
+            sleep 5
+          done
+          echo "::error::HTTPS webhook did not return 401."
+          exit 1
 
       - name: Summary
         env:

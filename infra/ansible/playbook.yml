@@ -1,7 +1,7 @@
 # Turns a blank Ubuntu Lightsail server into a running bot.
 # The "Start bot" GitHub workflow runs this; it can also be run by hand from
 # Linux/WSL:
-#   CONFIG_INI="$(cat config.ini)" ansible-playbook -i inventory.ini playbook.yml -e web_port=5000
+#   CONFIG_INI="$(cat config.ini)" ansible-playbook -i inventory.ini playbook.yml -e web_port=5000 -e public_ip=203.0.113.10
 
 - name: Deploy OHI/O Discord bot
   hosts: bot
@@ -14,7 +14,9 @@
     repo_url: https://github.com/hackohio/ohio-discord-bot.git
     repo_ref: main
     uv_version: "0.12.5" # keep in sync with .github/workflows/ci.yml
+    caddy_version: "2.11.4" # includes public IP certificate support
     web_port: 5000
+    public_ip: ""
     config_ini: "{{ lookup('ansible.builtin.env', 'CONFIG_INI') }}"
     restore_db_file: "" # path on the machine running Ansible; empty = start with a fresh database
 
@@ -29,10 +31,12 @@
       changed_when: false
       failed_when: cloud_init.rc not in [0, 2] # 2 = finished with non-fatal warnings
 
-    - name: Make sure config.ini was provided
+    - name: Make sure deployment inputs were provided
       ansible.builtin.assert:
-        that: config_ini | length > 0
-        fail_msg: CONFIG_INI is empty. Add it as a secret on the selected GitHub environment.
+        that:
+          - config_ini | length > 0
+          - public_ip | length > 0
+        fail_msg: CONFIG_INI and public_ip are required deployment inputs.
         quiet: true
 
   tasks:
@@ -54,9 +58,39 @@
 
     - name: Install system packages
       ansible.builtin.apt:
-        name: [git, acl, sqlite3]
+        name: [git, acl, sqlite3, ca-certificates, python3-debian]
         update_cache: true
         lock_timeout: 300 # first boot often runs unattended-upgrades, which holds the apt lock
+
+    - name: Add the official Caddy package repository
+      ansible.builtin.deb822_repository:
+        name: caddy-stable
+        types: [deb]
+        uris: https://dl.cloudsmith.io/public/caddy/stable/deb/debian
+        suites: any-version
+        components: [main]
+        signed_by: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+      register: caddy_repository
+
+    - name: Install Caddy
+      ansible.builtin.apt:
+        name: "caddy={{ caddy_version }}"
+        state: present
+        update_cache: "{{ caddy_repository.changed }}"
+        lock_timeout: 300
+
+    - name: Configure HTTPS for the webhook IP address
+      ansible.builtin.template:
+        src: templates/Caddyfile.j2
+        dest: /etc/caddy/Caddyfile
+        owner: root
+        group: caddy
+        mode: "0644"
+      notify: Restart Caddy
+
+    - name: Validate the Caddy configuration
+      ansible.builtin.command: caddy validate --config /etc/caddy/Caddyfile
+      changed_when: false
 
     - name: Install uv
       ansible.builtin.unarchive:
@@ -143,6 +177,12 @@
         state: started
         daemon_reload: true
 
+    - name: Enable and start Caddy
+      ansible.builtin.systemd_service:
+        name: caddy
+        enabled: true
+        state: started
+
     - name: Apply pending restarts
       ansible.builtin.meta: flush_handlers
 
@@ -162,3 +202,8 @@
         name: ohio-bot
         state: restarted
         daemon_reload: true
+
+    - name: Restart Caddy
+      ansible.builtin.systemd_service:
+        name: caddy
+        state: restarted

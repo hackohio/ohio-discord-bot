@@ -28,7 +28,7 @@ _TEST_CONFIG.write_text(
 
 [web]
  port=5000
- api_key=test-api-key
+ api_key=test-api-key-with-at-least-32-characters
 
 [email]
  address=bot@example.test

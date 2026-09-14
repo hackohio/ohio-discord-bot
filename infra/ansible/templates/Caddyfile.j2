@@ -1,0 +1,14 @@
+https://{{ public_ip }} {
+	request_body {
+		max_size 16384
+	}
+
+	tls {
+		issuer acme {
+			disable_http_challenge
+			profile shortlived
+		}
+	}
+
+	reverse_proxy 127.0.0.1:{{ web_port }}
+}

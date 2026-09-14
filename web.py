@@ -38,6 +38,12 @@ ROLE_MAP = {"1": "judge", "2": "mentor"}
 
 # Define the server as app
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    return jsonify({"error": "Request body must not exceed 16 KiB"}), 413
 
 
 @app.before_request
@@ -65,6 +71,11 @@ def finish_request(response):
 
 
 # Setup a method to listen at "/post/user" for a post request
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+
 @app.route("/post/user", methods=["POST"])
 def push_user():
     request_id = g.request_id
@@ -158,4 +169,4 @@ def push_user():
 def start():
     configure_logging("web")
     logger.info("webhook_starting port=%r", config.web_port)
-    serve(app, host="0.0.0.0", port=config.web_port)
+    serve(app, host="127.0.0.1", port=config.web_port)

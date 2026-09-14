@@ -46,10 +46,13 @@ organization folder. It must define these sections and values:
 | `web`     | `port`, `api_key`                                              |
 | `email`   | `address`, `password`, `code_expiration_time`                  |
 
-The webhook expects an `api-key` header that matches the configured key. Its
-JSON body includes `email`, `first_name`, `last_name`, `is_capstone`, and an
-optional comma-separated `roles` value; role codes `1` and `2` map to judge and
-mentor, respectively.
+The webhook expects an `api-key` header that matches a configured key of at
+least 32 characters. Generate one with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"`. Its JSON body
+includes `email`, `first_name`, `last_name`, `is_capstone`, and an optional
+comma-separated `roles` value; role codes `1` and `2` map to judge and mentor,
+respectively. Deployed requests use HTTPS; the internal Waitress port is
+loopback-only.
 
 ## Project layout
 

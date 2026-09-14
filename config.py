@@ -95,6 +95,20 @@ def _get_bool(section: str, option: str) -> bool:
         raise SystemExit(1) from None
 
 
+def _get_web_api_key() -> str:
+    value = config_data["web"]["api_key"].strip()
+    if len(value) < 32:
+        logger.error(
+            "configuration_invalid filename=%r section=%r option=%r reason=%r",
+            CONFIG_FILENAME,
+            "web",
+            "api_key",
+            "must_be_at_least_32_characters",
+        )
+        raise SystemExit(1)
+    return value
+
+
 def _get_int_set(section: str, option: str) -> set[int]:
     """Read an optional comma-separated set of positive integer IDs."""
     if not config_data.has_option(section, option):
@@ -137,7 +151,7 @@ discord_shared_categories = _get_bool("discord", "shared_categories")
 contact_registration_link = config_data["contact"]["registration_link"]
 contact_organizer_email = config_data["contact"]["organizer_email"]
 web_port = _get_int("web", "port")
-web_api_key = config_data["web"]["api_key"]
+web_api_key = _get_web_api_key()
 email_address = config_data["email"]["address"]
 email_password = config_data["email"]["password"]
 email_code_expiration_time = _get_int("email", "code_expiration_time")

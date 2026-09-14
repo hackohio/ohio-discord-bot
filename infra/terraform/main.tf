@@ -31,11 +31,11 @@ resource "aws_lightsail_instance_public_ports" "bot" {
     cidrs     = var.ssh_allowed_cidrs
   }
 
-  # Registration webhook (web.py). The Discord connection is outbound and needs no open port.
+  # Caddy terminates HTTPS and proxies to the loopback-only registration webhook.
   port_info {
     protocol  = "tcp"
-    from_port = var.web_port
-    to_port   = var.web_port
+    from_port = 443
+    to_port   = 443
     cidrs     = ["0.0.0.0/0"]
   }
 }

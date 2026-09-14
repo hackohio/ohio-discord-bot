@@ -125,6 +125,10 @@ short lowercase name containing only letters, numbers, and hyphens, such as
 |---|---|
 | `CONFIG_INI` | that event's bot token, Discord IDs, webhook key, and other configuration |
 
+The webhook key must be at least 32 characters. Generate one with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"`. Rotate any key
+that was previously sent over the old plain-HTTP endpoint.
+
 The workflows present these environments as the event choices. Delete any old
 repository-level `CONFIG_INI` secret so a missing environment secret cannot silently
 fall back to the wrong event's configuration. To change one event's config, update
@@ -147,8 +151,13 @@ its `CONFIG_INI` secret and run **Start bot** for that event again.
 To check that the webhook is reachable, send a request with a wrong key. You should get `401`:
 
 ```bash
-curl -i -X POST http://<SERVER_IP>:<PORT>/post/user -H "api-key: wrong" -H "Content-Type: application/json" -d "{}"
+curl -i -X POST https://<SERVER_IP>/post/user -H "api-key: wrong" -H "Content-Type: application/json" -d "{}"
 ```
+
+For outage and certificate alerts, configure an external monitor to request
+`https://<SERVER_IP>/health` every five minutes and alert unless it receives
+HTTP `200` with `{"status":"ok"}`. Update the monitor whenever the workflow
+reports a new server IP.
 
 ### Stop
 
@@ -193,8 +202,9 @@ checks and removes the event name entered in that workflow run.
 
 ## Known limitations
 
-- **The webhook is plain HTTP**, so the `api-key` is sent unencrypted. Fixing this
-  needs a domain name plus HTTPS (for example with Caddy).
+- HTTPS uses a short-lived Let's Encrypt certificate for the server's public IP.
+  Caddy renews it automatically; if webhook TLS fails, inspect
+  `sudo journalctl -u caddy -n 100 --no-pager`.
 - `start.py` runs the bot and the webhook as two child processes. If only one of
   them crashes, the service stays "running" and systemd won't restart it. Check
   the logs if the bot goes quiet but the webhook still responds.

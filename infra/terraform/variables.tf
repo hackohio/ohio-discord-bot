@@ -32,9 +32,3 @@ variable "ssh_allowed_cidrs" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
-
-variable "web_port" {
-  description = "Port the registration webhook listens on. Must match [web] port in config.ini; the workflows read it from there."
-  type        = number
-  default     = 5000
-}

@@ -18,12 +18,24 @@ class WebhookTestCase(DatabaseTestCase):
             "/post/user", json=payload, headers=self.headers, **kwargs
         )
 
+    def test_health_endpoint_requires_no_authentication(self):
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {"status": "ok"})
+
     def test_invalid_api_key_returns_401(self):
         response = self.client.post(
             "/post/user", json={}, headers={"api-key": "wrong-key"}
         )
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json["error"], "API-Key is not correct.")
+
+    def test_oversized_request_returns_json_413(self):
+        response = self.post({"email": "person@example.com", "extra": "x" * 16384})
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.json, {"error": "Request body must not exceed 16 KiB"}
+        )
 
     def test_invalid_json_and_fields_return_400(self):
         response = self.client.post(

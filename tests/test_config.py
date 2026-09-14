@@ -4,6 +4,27 @@ import unittest
 import config
 
 
+class WebConfigurationTestCase(unittest.TestCase):
+    def setUp(self):
+        self._config_data = config.config_data
+        config.config_data = configparser.ConfigParser()
+
+    def tearDown(self):
+        config.config_data = self._config_data
+
+    def test_web_api_key_must_be_at_least_32_characters(self):
+        for value in ("", "short-key"):
+            config.config_data.read_dict({"web": {"api_key": value}})
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                config._get_web_api_key()
+            config.config_data.clear()
+
+    def test_web_api_key_is_trimmed(self):
+        key = "a" * 32
+        config.config_data.read_dict({"web": {"api_key": f"  {key}  "}})
+        self.assertEqual(config._get_web_api_key(), key)
+
+
 class CleanupConfigurationTestCase(unittest.TestCase):
     def setUp(self):
         self._config_data = config.config_data
