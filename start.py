@@ -10,11 +10,11 @@ logger = logging.getLogger(__name__)
 def main():
     configure_logging("launcher")
 
-    import bot
+    from discord_bot import app
     import web
 
     processes = (
-        multiprocessing.Process(target=bot.start, name="discord-bot"),
+        multiprocessing.Process(target=app.run_bot, name="discord-bot"),
         multiprocessing.Process(target=web.start, name="registration-webhook"),
     )
     try:
