@@ -95,6 +95,32 @@ def _get_bool(section: str, option: str) -> bool:
         raise SystemExit(1) from None
 
 
+def _get_int_set(section: str, option: str) -> set[int]:
+    """Read an optional comma-separated set of positive integer IDs."""
+    if not config_data.has_option(section, option):
+        return set()
+
+    raw_value = config_data.get(section, option)
+    if not raw_value.strip():
+        return set()
+
+    try:
+        values = {int(item.strip()) for item in raw_value.split(",")}
+        if any(value <= 0 for value in values):
+            raise ValueError("must_be_positive")
+    except ValueError as exc:
+        logger.error(
+            "configuration_invalid filename=%r section=%r option=%r value=%r reason=%s",
+            CONFIG_FILENAME,
+            section,
+            option,
+            raw_value,
+            exc,
+        )
+        raise SystemExit(1) from None
+    return values
+
+
 # Declare relevant variables to be retrieved
 discord_guild_id = _get_int("discord", "guild_id")
 discord_token = config_data["discord"]["token"]
@@ -115,5 +141,7 @@ web_api_key = config_data["web"]["api_key"]
 email_address = config_data["email"]["address"]
 email_password = config_data["email"]["password"]
 email_code_expiration_time = _get_int("email", "code_expiration_time")
+cleanup_channel_ids = _get_int_set("cleanup", "channel_ids")
+cleanup_protected_user_ids = _get_int_set("cleanup", "protected_user_ids")
 
 logger.info("configuration_loaded filename=%r web_port=%r", CONFIG_FILENAME, web_port)

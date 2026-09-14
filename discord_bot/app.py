@@ -13,6 +13,7 @@ from logging_config import configure_logging
 logger = logging.getLogger(__name__)
 
 EXTENSIONS = (
+    "discord_bot.cogs.cleanup",
     "discord_bot.cogs.lfg",
     "discord_bot.cogs.teams",
     "discord_bot.cogs.verification",
