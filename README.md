@@ -18,9 +18,9 @@ with event intake workflows.
 
 ## Run locally
 
-This project requires Python 3.12, [uv](https://docs.astral.sh/uv/), and an organization-provided
-`config.ini` in the repository root. The file contains Discord, email, and
-webhook credentials; keep it private and never commit it.
+This project requires Python 3.12, [uv](https://docs.astral.sh/uv/), and an
+organization-provided `config.ini` in the repository root. The file contains
+Discord, email, and webhook credentials; keep it private and never commit it.
 
 ```bash
 uv sync
@@ -53,14 +53,15 @@ mentor, respectively.
 
 ## Project layout
 
-| File                                 | Purpose                                                          |
-| ------------------------------------ | ---------------------------------------------------------------- |
-| [`start.py`](start.py)               | Starts the bot and webhook processes.                            |
-| [`bot.py`](bot.py)                   | Discord slash commands, verification, roles, and team workflows. |
-| [`web.py`](web.py)                   | Registration webhook.                                            |
-| [`records.py`](records.py)           | SQLite schema and data access functions.                         |
-| [`import_table.py`](import_table.py) | Imports Qualtrics CSV exports.                                   |
-| [`export_data.py`](export_data.py)   | Exports team data to CSV.                                        |
+| File                                       | Purpose                                        |
+| ------------------------------------------ | ---------------------------------------------- |
+| [`start.py`](start.py)                     | Starts the bot and webhook processes.          |
+| [`discord_bot/app.py`](discord_bot/app.py) | Bot lifecycle, intents, and extension loading. |
+| [`discord_bot/cogs/`](discord_bot/cogs/)   | Discord commands grouped by event workflow.    |
+| [`web.py`](web.py)                         | Registration webhook.                          |
+| [`records.py`](records.py)                 | SQLite schema and data access functions.       |
+| [`import_table.py`](import_table.py)       | Imports Qualtrics CSV exports.                 |
+| [`export_data.py`](export_data.py)         | Exports team data to CSV.                      |
 
 ## Contributing
 
