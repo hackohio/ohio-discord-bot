@@ -236,7 +236,7 @@ class VerificationCog(commands.Cog):
         if records.is_verified(user.id):
             _log_rejection(interaction, "already_verified")
             first_name = records.get_first_name(records.get_verified_email(user.id))
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Welcome, {first_name}! You are already verified."
             )
             return
@@ -249,7 +249,7 @@ class VerificationCog(commands.Cog):
             code_info = records.get_value_from_code(code)
             if not code_info:
                 _log_rejection(interaction, "invalid_or_expired_code")
-                await interaction.followup.send(
+                await interaction.edit_original_response(
                     content="Your Verification Code is either not valid or has expired. Please request a new one.",
                 )
                 return
@@ -261,7 +261,7 @@ class VerificationCog(commands.Cog):
                     "code_belongs_to_another_user",
                     target_id=code_info["discord_id"],
                 )
-                await interaction.followup.send(
+                await interaction.edit_original_response(
                     content="The code you entered is not associated with your discord account. Please request a new one by entering the email you registered with.",
                 )
                 return
@@ -278,7 +278,7 @@ class VerificationCog(commands.Cog):
             await sync_user_roles(user)
 
             # Send the user a message that they have been verified and the next steps
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Welcome {records.get_first_name(email)}! \nYou have been verified. Please check the {interaction.guild.get_channel(config.discord_start_here_channel_id).mention} channel for next steps.",
             )
 
@@ -289,7 +289,7 @@ class VerificationCog(commands.Cog):
             # Confirm user is registered
             if not records.is_registered(email):
                 _log_rejection(interaction, "not_registered", email=email)
-                await interaction.followup.send(
+                await interaction.edit_original_response(
                     content=f"There are no user's registered with the email: `<{email}>`. \nPlease verify using the correct email, reregister at {config.contact_registration_link}, or contact administration.",
                 )
                 return
@@ -297,7 +297,7 @@ class VerificationCog(commands.Cog):
             # Check if email is in verified DB
             if records.is_verified(email):
                 _log_rejection(interaction, "email_already_verified", email=email)
-                await interaction.followup.send(
+                await interaction.edit_original_response(
                     content=f"A User with that email address is already verified. \nPlease reregister with a different email address at {config.contact_registration_link}",
                 )
                 return
@@ -314,11 +314,11 @@ class VerificationCog(commands.Cog):
                 records.add_code(
                     email, user.id, CODE, config.email_code_expiration_time
                 )
-                await interaction.followup.send(
+                await interaction.edit_original_response(
                     content=f"Check your inbox for an email from `<{config.email_address}>` with a verification link. Please check that email and enter the code in this format \n `/verify (code)`\n\nBe sure to check your junk folder if you have trouble finding it",
                 )
             else:
-                await interaction.followup.send(
+                await interaction.edit_original_response(
                     content="Failed to send verification email. Please contact an organizer for assistance.",
                 )
 

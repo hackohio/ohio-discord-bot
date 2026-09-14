@@ -3,6 +3,7 @@
 import logging
 import random
 import uuid
+from enum import IntEnum
 
 import discord
 from discord import app_commands
@@ -17,6 +18,15 @@ logger = logging.getLogger(__name__)
 MAX_TEAM_SIZE = 4
 CAPSTONE_TEAM_SIZE = 5
 TEAM_FORMATION_TIMEOUT = 120
+
+
+class TeamJoinStatus(IntEnum):
+    ALLOWED = 0
+    NOT_VERIFIED = -1
+    NOT_PARTICIPANT = -2
+    ALREADY_ON_TEAM = -3
+    CAPSTONE_MISMATCH = -4
+
 
 async def handle_team_deletion(team_id: int, guild: discord.Guild):  # TESTED
     """
@@ -108,31 +118,29 @@ async def delete_team_channels(team_id: int, guild: discord.Guild):  # TESTED
 
 
 def can_join_team(
-    added_member: discord.Member, capstone_team: bool = None
-) -> int:  # TESTED
-    """Checks if User can join a team whether capstone, not capstone, or unspecified"""
+    added_member: discord.Member, capstone_team: bool | None = None
+) -> TeamJoinStatus:  # TESTED
+    """Return why a member can or cannot join a team."""
 
-    # Check that added_user is verified
     if not records.is_verified(added_member.id):
-        return -1
+        return TeamJoinStatus.NOT_VERIFIED
 
-    # Check if added_user is a participant
     email = records.get_verified_email(added_member.id)
     user_data = records.get_verified_user(email)
     if not user_data["is_participant"]:
-        return -2
+        return TeamJoinStatus.NOT_PARTICIPANT
 
-    # Check if add_user is already on a team
     if records.get_user_team_id(added_member.id):
-        return -3
+        return TeamJoinStatus.ALREADY_ON_TEAM
 
-    # Check if user can join if a capstone team if relavent (not None)
     if capstone_team is not None and capstone_team != user_data["is_capstone"]:
-        return -4
-    return 0
+        return TeamJoinStatus.CAPSTONE_MISMATCH
+    return TeamJoinStatus.ALLOWED
 
 
-async def perform_team_join(member: discord.Member, team_id: int, guild: discord.Guild):  # TESTED
+async def perform_team_join(
+    member: discord.Member, team_id: int, guild: discord.Guild
+):  # TESTED
     team_data = records.get_team(team_id)
     # DB Update
     records.join_team(member.id, team_id)
@@ -171,7 +179,9 @@ async def perform_team_join(member: discord.Member, team_id: int, guild: discord
     )
 
 
-async def perform_team_leave(member: discord.Member, team_id: int, guild: discord.Guild):  # TESTED
+async def perform_team_leave(
+    member: discord.Member, team_id: int, guild: discord.Guild
+):  # TESTED
 
     team_data = records.get_team(team_id)
 
@@ -214,7 +224,9 @@ class TeamsCog(commands.Cog):
         self.bot = bot
 
     @app_commands.guild_only()
-    @app_commands.command(name="create_team", description="Create a new team for this event")
+    @app_commands.command(
+        name="create_team", description="Create a new team for this event"
+    )
     @app_commands.describe(team_name="Name/Label for your Team")
     @audit_command
     async def create_team(
@@ -245,51 +257,47 @@ class TeamsCog(commands.Cog):
         # Retrieve Context
         user = interaction.user
         await interaction.response.defer(ephemeral=True)
-        operation_id = uuid.uuid4().hex
 
         # ------------- Check if Team and Creator is Valid --------------------
 
+        creator_errors = {
+            TeamJoinStatus.NOT_VERIFIED: (
+                "not_verified",
+                "You are not verified! Please verify yourself with the /verify command",
+            ),
+            TeamJoinStatus.NOT_PARTICIPANT: (
+                "not_participant",
+                "You are not a participant. You cannot create a team",
+            ),
+            TeamJoinStatus.ALREADY_ON_TEAM: (
+                "already_on_team",
+                "You are already on a team. You can leave with the /leave_team command",
+            ),
+        }
         author_status = can_join_team(user)
-        match author_status:
-            case -1:
-                _log_rejection(interaction, "not_verified", operation_id=operation_id)
-                await interaction.followup.send(
-                    content="You are not verified! Please verify yourself with the /verify command",
-                )
-                return
-            case -2:
-                _log_rejection(interaction, "not_participant", operation_id=operation_id)
-                await interaction.followup.send(
-                    content="You are not a participant. You cannot create a team",
-                )
-                return
-            case -3:
-                _log_rejection(interaction, "already_on_team", operation_id=operation_id)
-                await interaction.followup.send(
-                    content="You are already on a team. You can leave with the /leave_team command",
-                )
-                return
+        if author_status in creator_errors:
+            reason, message = creator_errors[author_status]
+            _log_rejection(interaction, reason)
+            await interaction.edit_original_response(content=message)
+            return
 
-        # Check that team doesn't already exist
         if records.team_exists(team_name):
             _log_rejection(
                 interaction,
                 "team_name_in_use",
-                operation_id=operation_id,
                 team_name=team_name,
             )
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="That team name is already in use. Please chose a different name",
             )
             return
 
-        # -------------- Check if Members added are Valid -------------------
-
+        # Validate every explicitly selected teammate before creating anything.
         is_capstone = records.get_verified_user(user.id)["is_capstone"]
-
-        # Check that atleast one member can be added to team
         members = [teammate_1, teammate_2, teammate_3]
         valid_members = []
+        validation_errors = []
+        selected_ids = set()
         for mem in members:
             if not mem:
                 continue
@@ -297,177 +305,255 @@ class TeamsCog(commands.Cog):
                 _log_rejection(
                     interaction,
                     "target_is_actor",
-                    operation_id=operation_id,
                     target_id=mem.id,
                     target_username=mem.name,
                 )
-                await interaction.followup.send(
-                    ephemeral=True,
-                    content="Failed to add team member. You cannot add yourself as a teammate.",
-                )
+                validation_errors.append("You cannot add yourself as a teammate.")
                 continue
-            match can_join_team(mem, is_capstone):
-                case -1 | -2:
-                    await interaction.followup.send(
-                        ephemeral=True,
-                        content=f"Failed to add team member. {mem.mention} is not a verified participant.",
-                    )
-                case -3:
-                    await interaction.followup.send(
-                        ephemeral=True,
-                        content=f"Failed to add team member. {mem.mention} is already on a team. To join, they must leave using /leaveteam",
-                    )
-                case -4:
-                    await interaction.followup.send(
-                        ephemeral=True,
-                        content=f"Failed to add team member. {mem.mention} is {'NOT ' if is_capstone else ''}registered as a capstone participant while you are {'' if is_capstone else 'NOT '}registered as capstone. If this is a mistake, members can re-regsiter at {config.contact_registration_link}",
-                    )
-                case 0:
-                    valid_members.append(mem)
+            if mem.id in selected_ids:
+                validation_errors.append(f"{mem.mention} was selected more than once.")
+                continue
+            selected_ids.add(mem.id)
+            status = can_join_team(mem, is_capstone)
+            if status == TeamJoinStatus.ALLOWED:
+                valid_members.append(mem)
+            elif status in (
+                TeamJoinStatus.NOT_VERIFIED,
+                TeamJoinStatus.NOT_PARTICIPANT,
+            ):
+                validation_errors.append(
+                    f"{mem.mention} is not a verified participant."
+                )
+            elif status == TeamJoinStatus.ALREADY_ON_TEAM:
+                validation_errors.append(f"{mem.mention} is already on a team.")
+            elif status == TeamJoinStatus.CAPSTONE_MISMATCH:
+                validation_errors.append(
+                    f"{mem.mention} does not have the same capstone status as you."
+                )
 
-        if not valid_members:
+        if not valid_members or validation_errors:
+            if not validation_errors:
+                validation_errors.append("Select at least one teammate.")
             _log_rejection(
                 interaction,
-                "no_valid_teammates",
-                operation_id=operation_id,
+                "invalid_teammates",
                 team_name=team_name,
+                invalid_count=len(validation_errors),
             )
-            await interaction.followup.send(
-                ephemeral=True,
-                content="Team creation failed - No teammates could be added. \nChoose a different teammate or reach out to them to fix their problem.",
+            description = (
+                "Fix these issues and try again:\n"
+                + "\n".join(f"• {error}" for error in validation_errors)
+                + "\n\nNo team was created."
+            )
+            await interaction.edit_original_response(
+                embed=create_embed("Team creation failed", description)
             )
             return
 
-        # -------------------- Create Team Channels -------------------------
-
-        team_role = await interaction.guild.create_role(name=team_name)
-        logger.info(
-            "team_role_created operation_id=%r guild_id=%r team_name=%r role_id=%r",
-            operation_id,
-            interaction.guild.id,
-            team_name,
-            team_role.id,
-        )
-
-        category_channel_perms = {
-            interaction.guild.get_role(
-                config.discord_all_access_pass_role_id
-            ): discord.PermissionOverwrite(view_channel=True),
-            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            team_role: discord.PermissionOverwrite(view_channel=True),
-        }
-        text_channel_perms = {
-            interaction.guild.get_role(
-                config.discord_all_access_pass_role_id
-            ): discord.PermissionOverwrite(view_channel=True),
-            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            team_role: discord.PermissionOverwrite(view_channel=True),
-        }
-        voice_channel_perms = {
-            team_role: discord.PermissionOverwrite(
-                connect=True, view_channel=True, speak=True
-            ),
-            interaction.guild.get_role(
-                config.discord_all_access_pass_role_id
-            ): discord.PermissionOverwrite(connect=True, view_channel=True, speak=True),
-            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        }
-
-        next_team_id = records.get_next_team_id()
+        team_role = None
         category_channel = None
         text_channel = None
         voice_channel = None
+        category_created = False
+        team_id = None
 
-        # Case 1: Each team has their own category and voice channel
-        if not config.discord_shared_categories:
-            category_channel = await interaction.guild.create_category_channel(
-                f"Team {next_team_id} - {team_name}", overwrites=category_channel_perms
-            )
+        try:
+            # -------------------- Create Team Channels -------------------------
+            team_role = await interaction.guild.create_role(name=team_name)
             logger.info(
-                "team_category_created operation_id=%r guild_id=%r channel_id=%r team_name=%r",
-                operation_id,
+                "team_role_created interaction_id=%r guild_id=%r team_name=%r role_id=%r",
+                interaction.id,
                 interaction.guild.id,
-                category_channel.id,
                 team_name,
-            )
-            text_channel = await category_channel.create_text_channel(
-                f"{team_name.replace(' ', '-')}-text", overwrites=text_channel_perms
-            )
-            logger.info(
-                "team_text_channel_created operation_id=%r guild_id=%r channel_id=%r team_name=%r",
-                operation_id,
-                interaction.guild.id,
-                text_channel.id,
-                team_name,
-            )
-            voice_channel = await category_channel.create_voice_channel(
-                f"{team_name.replace(' ', '-')}-voice", overwrites=voice_channel_perms
-            )
-            logger.info(
-                "team_voice_channel_created operation_id=%r guild_id=%r channel_id=%r team_name=%r",
-                operation_id,
-                interaction.guild.id,
-                voice_channel.id,
-                team_name,
+                team_role.id,
             )
 
-        # Case 2: Categories hold text-channels 1-50, etc
-        else:
-            channels_per_category = 50
-            new_channel_needed = (
-                (next_team_id - 1) % channels_per_category == 0
-            ) or not records.get_latest_category()
+            category_channel_perms = {
+                interaction.guild.get_role(
+                    config.discord_all_access_pass_role_id
+                ): discord.PermissionOverwrite(view_channel=True),
+                interaction.guild.default_role: discord.PermissionOverwrite(
+                    view_channel=False
+                ),
+                team_role: discord.PermissionOverwrite(view_channel=True),
+            }
+            text_channel_perms = {
+                interaction.guild.get_role(
+                    config.discord_all_access_pass_role_id
+                ): discord.PermissionOverwrite(view_channel=True),
+                interaction.guild.default_role: discord.PermissionOverwrite(
+                    view_channel=False
+                ),
+                team_role: discord.PermissionOverwrite(view_channel=True),
+            }
+            voice_channel_perms = {
+                team_role: discord.PermissionOverwrite(
+                    connect=True, view_channel=True, speak=True
+                ),
+                interaction.guild.get_role(
+                    config.discord_all_access_pass_role_id
+                ): discord.PermissionOverwrite(
+                    connect=True, view_channel=True, speak=True
+                ),
+                interaction.guild.default_role: discord.PermissionOverwrite(
+                    view_channel=False
+                ),
+            }
 
-            if new_channel_needed:  # New category channel needs made
+            next_team_id = records.get_next_team_id()
+            if not config.discord_shared_categories:
+                category_created = True
                 category_channel = await interaction.guild.create_category_channel(
-                    f"Teams {next_team_id} - {(next_team_id - 1) + channels_per_category}",
+                    f"Team {next_team_id} - {team_name}",
                     overwrites=category_channel_perms,
                 )
-                records.push_new_category(category_channel.id)
                 logger.info(
-                    "team_category_created operation_id=%r guild_id=%r channel_id=%r team_name=%r",
-                    operation_id,
+                    "team_category_created interaction_id=%r guild_id=%r channel_id=%r team_name=%r",
+                    interaction.id,
                     interaction.guild.id,
                     category_channel.id,
                     team_name,
                 )
-            else:  # Use a previous team's category channel
-                category_channel = interaction.guild.get_channel(records.get_latest_category())
-            text_channel = await category_channel.create_text_channel(
-                f"{next_team_id}-{team_name.replace(' ', '-')}-text",
-                overwrites=text_channel_perms,
-            )  # Inherit perms from Category
-            logger.info(
-                "team_text_channel_created operation_id=%r guild_id=%r channel_id=%r team_name=%r",
-                operation_id,
-                interaction.guild.id,
-                text_channel.id,
+                text_channel = await category_channel.create_text_channel(
+                    f"{team_name.replace(' ', '-')}-text", overwrites=text_channel_perms
+                )
+                logger.info(
+                    "team_text_channel_created interaction_id=%r guild_id=%r channel_id=%r team_name=%r",
+                    interaction.id,
+                    interaction.guild.id,
+                    text_channel.id,
+                    team_name,
+                )
+                voice_channel = await category_channel.create_voice_channel(
+                    f"{team_name.replace(' ', '-')}-voice",
+                    overwrites=voice_channel_perms,
+                )
+                logger.info(
+                    "team_voice_channel_created interaction_id=%r guild_id=%r channel_id=%r team_name=%r",
+                    interaction.id,
+                    interaction.guild.id,
+                    voice_channel.id,
+                    team_name,
+                )
+            else:
+                channels_per_category = 50
+                new_channel_needed = (
+                    (next_team_id - 1) % channels_per_category == 0
+                ) or not records.get_latest_category()
+                if new_channel_needed:
+                    category_created = True
+                    category_channel = await interaction.guild.create_category_channel(
+                        f"Teams {next_team_id} - {(next_team_id - 1) + channels_per_category}",
+                        overwrites=category_channel_perms,
+                    )
+                    logger.info(
+                        "team_category_created interaction_id=%r guild_id=%r channel_id=%r team_name=%r",
+                        interaction.id,
+                        interaction.guild.id,
+                        category_channel.id,
+                        team_name,
+                    )
+                else:
+                    category_channel = interaction.guild.get_channel(
+                        records.get_latest_category()
+                    )
+                text_channel = await category_channel.create_text_channel(
+                    f"{next_team_id}-{team_name.replace(' ', '-')}-text",
+                    overwrites=text_channel_perms,
+                )
+                logger.info(
+                    "team_text_channel_created interaction_id=%r guild_id=%r channel_id=%r team_name=%r",
+                    interaction.id,
+                    interaction.guild.id,
+                    text_channel.id,
+                    team_name,
+                )
+
+            team_id = records.create_team(
                 team_name,
+                is_capstone,
+                team_role.id,
+                category_channel.id,
+                text_channel.id,
+                voice_channel.id if voice_channel else None,
+            )
+            logger.info(
+                "team_database_row_created interaction_id=%r team_id=%r team_name=%r capstone=%r",
+                interaction.id,
+                team_id,
+                team_name,
+                is_capstone,
             )
 
-        # ----------------------- Create Team ------------------------
+            # Add the creator and all selected teammates only after all validation passed.
+            await perform_team_join(user, team_id, interaction.guild)
+            records.set_team_lead(team_id, user.id)
+            for mem in valid_members:
+                await perform_team_join(mem, team_id, interaction.guild)
+            if config.discord_shared_categories and category_created:
+                records.push_new_category(category_channel.id)
+            logger.info(
+                "team_creation_completed interaction_id=%r team_id=%r team_name=%r member_count=%r",
+                interaction.id,
+                team_id,
+                team_name,
+                len(valid_members) + 1,
+            )
+        except Exception:
+            logger.exception(
+                "team_creation_failed interaction_id=%r team_name=%r",
+                interaction.id,
+                team_name,
+            )
+            cleanup_done = False
+            if team_id is not None:
+                try:
+                    await handle_team_deletion(team_id, interaction.guild)
+                    cleanup_done = True
+                except Exception:
+                    logger.exception(
+                        "team_creation_cleanup_failed interaction_id=%r team_id=%r",
+                        interaction.id,
+                        team_id,
+                    )
+            if not cleanup_done:
+                for resource in (
+                    voice_channel,
+                    text_channel,
+                    category_channel if category_created else None,
+                    team_role,
+                ):
+                    if not resource:
+                        continue
+                    try:
+                        await resource.delete()
+                    except Exception:
+                        logger.exception(
+                            "team_creation_resource_cleanup_failed interaction_id=%r resource_id=%r",
+                            interaction.id,
+                            getattr(resource, "id", None),
+                        )
+                if team_id is not None:
+                    try:
+                        records.remove_team(team_id)
+                    except Exception:
+                        logger.exception(
+                            "team_creation_database_cleanup_failed interaction_id=%r team_id=%r",
+                            interaction.id,
+                            team_id,
+                        )
+            await interaction.edit_original_response(
+                content="Team creation failed while setting up Discord resources. No team was created. Please try again or contact an organizer."
+            )
+            return
 
-        team_id = records.create_team(
-            team_name,
-            is_capstone,
-            team_role.id,
-            category_channel.id,
-            text_channel.id,
-            voice_channel.id if voice_channel else None,
-        )
-        logger.info(
-            "team_database_row_created operation_id=%r team_id=%r team_name=%r capstone=%r",
-            operation_id,
-            team_id,
-            team_name,
-            is_capstone,
+        await interaction.edit_original_response(
+            embed=create_embed(
+                "Team created",
+                f"Your team ({team_role.mention}) is ready.\nTeam channel: {text_channel.mention}",
+            )
         )
 
-        # Respond to creator and send message to team channel
-        await interaction.followup.send(
-            content=f"Your Team ({team_role.mention}) has successfully been created!\n Your Team Channel: {text_channel.mention}",
-            ephemeral=True,
-        )
         welcome_embed = create_embed(
             title=f"Welcome Team #{team_id}: {team_name}!",
             description=f"Manage your team using `/add_member`, `/remove_member`, `leave_team`, and `/my_team`.\n\n👑 **Team Lead:** {user.mention}",
@@ -483,26 +569,21 @@ class TeamsCog(commands.Cog):
                 ),
                 inline=False,
             )
-        await text_channel.send(embed=welcome_embed)
-
-        # Add Author and Valid Teammates to team
-        await perform_team_join(user, team_id, interaction.guild)  # Add author to team
-        records.set_team_lead(team_id, user.id)  # Make author team_lead
-        for mem in valid_members:
-            await perform_team_join(mem, team_id, interaction.guild)
-            await text_channel.send(
-                embed=create_embed(
-                    title="👋 New Teammate!",
-                    description=f"{mem.mention} has been added to the team by {interaction.user.mention}",
+        try:
+            await text_channel.send(embed=welcome_embed)
+            for mem in valid_members:
+                await text_channel.send(
+                    embed=create_embed(
+                        title="👋 New Teammate!",
+                        description=f"{mem.mention} has been added to the team by {interaction.user.mention}",
+                    )
                 )
+        except Exception:
+            logger.exception(
+                "team_notification_failed interaction_id=%r team_id=%r",
+                interaction.id,
+                team_id,
             )
-        logger.info(
-            "team_creation_completed operation_id=%r team_id=%r team_name=%r member_count=%r",
-            operation_id,
-            team_id,
-            team_name,
-            len(valid_members) + 1,
-        )
 
     @app_commands.guild_only()
     @app_commands.command(name="leave_team", description="Leave your current team")
@@ -528,7 +609,7 @@ class TeamsCog(commands.Cog):
         # Ensure user is on a team
         if not records.get_user_team_id(user.id):
             _log_rejection(interaction, "not_on_team")
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="You cannot leave a team since you are not assigned to one!",
             )
             return
@@ -543,7 +624,7 @@ class TeamsCog(commands.Cog):
 
         # Remove user from team
         await perform_team_leave(user, team_id, interaction.guild)
-        await interaction.followup.send(
+        await interaction.edit_original_response(
             content=f"You have successfully been removed from the team {team_role.mention}",
         )
 
@@ -577,8 +658,7 @@ class TeamsCog(commands.Cog):
     @app_commands.describe(member="The member to add to your team")
     @audit_command
     async def add_member(
-        self,
-        interaction: discord.Interaction, member: discord.Member
+        self, interaction: discord.Interaction, member: discord.Member
     ):  # TESTED
         """
         Adds a specified member to the team of the user who invokes the command.
@@ -596,15 +676,17 @@ class TeamsCog(commands.Cog):
         # Check that team_user is in a team
         if not records.get_user_team_id(team_user.id):
             _log_rejection(interaction, "not_on_team", target=member)
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="Failed to add team member. You are not currently in a team. You must be in a team to add a team member. Please use `/create_team` to create a team or have another participant use `/add_member` to add you to their team",
             )
             return
 
         # Check if member is already on your team
-        if records.get_user_team_id(team_user.id) == records.get_user_team_id(member.id):
+        if records.get_user_team_id(team_user.id) == records.get_user_team_id(
+            member.id
+        ):
             _log_rejection(interaction, "already_on_team", target=member)
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Failed to add team member. {member.mention} is already on your team!",
             )
             return
@@ -622,46 +704,49 @@ class TeamsCog(commands.Cog):
                 max_size=max_team_size,
                 target=member,
             )
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Failed to add team member. There is no space in your team. Teams can have a maximum of {max_team_size} members.",
             )
             return
 
         # Check if user can join the team
-        match can_join_team(added_user, is_capstone):
-            case -1 | -2:
-                _log_rejection(
-                    interaction,
-                    "not_participant",
-                    team_id=team_id,
-                    target=added_user,
-                )
-                await interaction.followup.send(
-                    content=f"Failed to add team member. {added_user.mention} is not a verified participant.",
-                )
-                return
-            case -3:
-                _log_rejection(
-                    interaction,
-                    "already_on_team",
-                    team_id=team_id,
-                    target=added_user,
-                )
-                await interaction.followup.send(
-                    content=f"Failed to add team member. {added_user.mention} is already on a team. To join, they must leave using /leave_team",
-                )
-                return
-            case -4:
-                _log_rejection(
-                    interaction,
-                    "capstone_mismatch",
-                    team_id=team_id,
-                    target=added_user,
-                )
-                await interaction.followup.send(
-                    content=f"Failed to add team member. {added_user.mention} is {'NOT ' if is_capstone else ''}registered as a capstone participant while you are {'' if is_capstone else 'NOT '}registered as capstone. If this is a mistake, members can re-regsiter at {config.contact_registration_link}",
-                )
-                return
+        status = can_join_team(added_user, is_capstone)
+        if status in (
+            TeamJoinStatus.NOT_VERIFIED,
+            TeamJoinStatus.NOT_PARTICIPANT,
+        ):
+            _log_rejection(
+                interaction,
+                "not_participant",
+                team_id=team_id,
+                target=added_user,
+            )
+            await interaction.edit_original_response(
+                content=f"Failed to add team member. {added_user.mention} is not a verified participant.",
+            )
+            return
+        if status == TeamJoinStatus.ALREADY_ON_TEAM:
+            _log_rejection(
+                interaction,
+                "already_on_team",
+                team_id=team_id,
+                target=added_user,
+            )
+            await interaction.edit_original_response(
+                content=f"Failed to add team member. {added_user.mention} is already on a team. To join, they must leave using /leave_team",
+            )
+            return
+        if status == TeamJoinStatus.CAPSTONE_MISMATCH:
+            _log_rejection(
+                interaction,
+                "capstone_mismatch",
+                team_id=team_id,
+                target=added_user,
+            )
+            await interaction.edit_original_response(
+                content=f"Failed to add team member. {added_user.mention} is {'NOT ' if is_capstone else ''}registered as a capstone participant while you are {'' if is_capstone else 'NOT '}registered as capstone. If this is a mistake, members can re-regsiter at {config.contact_registration_link}",
+            )
+            return
 
         # ------------- Happy Case --------------------
 
@@ -672,7 +757,7 @@ class TeamsCog(commands.Cog):
         text_channel = interaction.guild.get_channel(team_data["text_id"])
 
         # Send confirmation message to team_user
-        await interaction.followup.send(
+        await interaction.edit_original_response(
             content=f"{added_user.mention} has been added successfully"
         )
 
@@ -686,13 +771,13 @@ class TeamsCog(commands.Cog):
 
     @app_commands.guild_only()
     @app_commands.command(
-        name="remove_member", description="Remove a member from your team (Team Lead Only)"
+        name="remove_member",
+        description="Remove a member from your team (Team Lead Only)",
     )
     @app_commands.describe(member="The member to remove from your team")
     @audit_command
     async def remove_member(
-        self,
-        interaction: discord.Interaction, member: discord.Member
+        self, interaction: discord.Interaction, member: discord.Member
     ):  # TESTED
         """
         Removes a specific member from the team of the user who invokes the command.
@@ -710,7 +795,7 @@ class TeamsCog(commands.Cog):
         # Check that team_user is in a team
         if not records.get_user_team_id(team_user.id):
             _log_rejection(interaction, "not_on_team", target=member)
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="Failed to remove team member. You are not currently in a team."
             )
             return
@@ -726,7 +811,7 @@ class TeamsCog(commands.Cog):
                 expected_lead_id=team_lead_id,
                 target=member,
             )
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Only the Team Lead can invoke this command!\n{interaction.guild.get_member(team_lead_id).mention} is your lead. Contact them to invoke the command"
             )
             return
@@ -734,20 +819,22 @@ class TeamsCog(commands.Cog):
         # Team lead cannot remove themselves
         if member.id == team_user.id:
             _log_rejection(interaction, "target_is_actor", team_id=team_id)
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="You cannot remove yourself from the team. To leave the team, please use the `/leave_team` command."
             )
             return
 
         # Check if member is on your team
-        if records.get_user_team_id(team_user.id) != records.get_user_team_id(member.id):
+        if records.get_user_team_id(team_user.id) != records.get_user_team_id(
+            member.id
+        ):
             _log_rejection(
                 interaction,
                 "member_not_on_team",
                 team_id=team_id,
                 target=member,
             )
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Failed to remove team member. {member.mention} is not on your team!"
             )
             return
@@ -761,7 +848,7 @@ class TeamsCog(commands.Cog):
         text_channel = interaction.guild.get_channel(team_data["text_id"])
 
         # Send confirmation message to team_user
-        await interaction.followup.send(
+        await interaction.edit_original_response(
             content=f"{member.mention} has been removed successfully."
         )
 
@@ -779,7 +866,9 @@ class TeamsCog(commands.Cog):
         )
 
     @app_commands.guild_only()
-    @app_commands.command(name="my_team", description="Get information about your current team")
+    @app_commands.command(
+        name="my_team", description="Get information about your current team"
+    )
     @audit_command
     async def my_team(self, interaction: discord.Interaction):
         """
@@ -804,7 +893,7 @@ class TeamsCog(commands.Cog):
         team_id = records.get_user_team_id(user.id)
         if not team_id:
             _log_rejection(interaction, "not_on_team")
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="You are not currently assigned to a team."
             )
             return
@@ -813,7 +902,7 @@ class TeamsCog(commands.Cog):
         team_data = records.get_team(team_id)
         if not team_data:
             _log_rejection(interaction, "team_not_found", team_id=team_id)
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="There was an error retrieving your team information. Please contact an organizer for assistance."
             )
             return
@@ -822,9 +911,12 @@ class TeamsCog(commands.Cog):
         team_lead_member = guild.get_member(team_lead_id)
         if not team_lead_member:
             _log_rejection(
-                interaction, "team_lead_not_in_guild", team_id=team_id, lead_id=team_lead_id
+                interaction,
+                "team_lead_not_in_guild",
+                team_id=team_id,
+                lead_id=team_lead_id,
             )
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="There was an error retrieving your team information. Please contact an organizer for assistance."
             )
             return
@@ -844,9 +936,8 @@ class TeamsCog(commands.Cog):
             title=f"Your Team: {team_name}",
             description=f"**Team Lead:** {team_lead_member.mention}\n\n**Members:**\n{member_list}",
         )
-        await interaction.followup.send(embed=embed)
+        await interaction.edit_original_response(embed=embed)
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TeamsCog(bot))
-

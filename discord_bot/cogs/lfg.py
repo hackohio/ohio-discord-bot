@@ -35,13 +35,13 @@ class LfgCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         if not records.is_verified(user.id):
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="You need to verify first! Use the `/verify` command, then try again."
             )
             return
 
         if not records.get_verified_user(user.id)["is_participant"]:
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="You must be a participant to look for a group!"
             )
             return
@@ -50,20 +50,20 @@ class LfgCog(commands.Cog):
 
         if already_looking and not skills:
             records.remove_from_lfg(user.id)
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="You're no longer marked as **looking for a team**. Run `/lfg toggle` again whenever you want to turn it back on."
             )
             return
 
         if already_looking and skills:
             records.add_to_lfg(user.id, skills)
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Updated your skills to: **{skills}**\nYou're still marked as **looking for a team**."
             )
             return
 
         if records.get_user_team_id(user.id):
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="You're already on a team, so there's no need to look for one. Use `/leave_team` first if you want to find a different group."
             )
             return
@@ -72,7 +72,7 @@ class LfgCog(commands.Cog):
         message = "You're now marked as **looking for a team**! Others can find you with `/lfg view`."
         if not skills:
             message += "\n_Tip: run `/lfg toggle` again with the `skills` option to tell teams what you bring._"
-        await interaction.followup.send(content=message)
+        await interaction.edit_original_response(content=message)
 
     @lfg.command(name="view", description="See who's currently looking for a team")
     async def lfg_view(self, interaction: discord.Interaction):
@@ -87,7 +87,7 @@ class LfgCog(commands.Cog):
                 present.append((seeker, member))
 
         if not present:
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 embed=create_embed(
                     "Looking for a Team",
                     "No one is currently looking for a team. Check back later, or mark yourself with `/lfg toggle`!",
@@ -116,7 +116,7 @@ class LfgCog(commands.Cog):
             )
 
         embed = create_embed(f"Looking for a Team ({len(present)})", description)
-        await interaction.followup.send(embed=embed)
+        await interaction.edit_original_response(embed=embed)
 
 
 async def setup(bot: commands.Bot):

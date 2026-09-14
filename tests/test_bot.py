@@ -66,6 +66,7 @@ def make_interaction(user, guild=None, *, response_done=False):
         guild=guild or SimpleNamespace(id=99),
         command=None,
         response=response,
+        edit_original_response=AsyncMock(),
         followup=followup,
     )
 
@@ -89,40 +90,187 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.lfg_cog = lfg.LfgCog(bot)
         self.verification_cog = verification.VerificationCog(bot)
 
+    def assert_deferred_response(self, interaction):
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        interaction.edit_original_response.assert_awaited_once()
+        interaction.followup.send.assert_not_awaited()
+
     def test_can_join_team_validation_codes(self):
         unverified = make_member(999)
-        self.assertEqual(teams.can_join_team(unverified), -1)
+        self.assertEqual(teams.can_join_team(unverified), teams.TeamJoinStatus.NOT_VERIFIED)
 
         staff = make_member(100)
         self.add_verified(
             100, email="staff@example.com", roles=["mentor"], username="staff#0001"
         )
-        self.assertEqual(teams.can_join_team(staff), -2)
+        self.assertEqual(teams.can_join_team(staff), teams.TeamJoinStatus.NOT_PARTICIPANT)
 
         assigned = make_member(101)
         self.add_verified(101)
         team_id = records.create_team("Assigned", False, 201, 202, 203)
         records.join_team(101, team_id)
-        self.assertEqual(teams.can_join_team(assigned), -3)
+        self.assertEqual(teams.can_join_team(assigned), teams.TeamJoinStatus.ALREADY_ON_TEAM)
 
         capstone = make_member(102)
         self.add_verified(102, is_capstone=True)
         standard = make_member(103)
         self.add_verified(103, is_capstone=False)
-        self.assertEqual(teams.can_join_team(capstone, False), -4)
-        self.assertEqual(teams.can_join_team(standard, True), -4)
-        self.assertEqual(teams.can_join_team(capstone, True), 0)
-        self.assertEqual(teams.can_join_team(standard, False), 0)
+        self.assertEqual(
+            teams.can_join_team(capstone, False), teams.TeamJoinStatus.CAPSTONE_MISMATCH
+        )
+        self.assertEqual(
+            teams.can_join_team(standard, True), teams.TeamJoinStatus.CAPSTONE_MISMATCH
+        )
+        self.assertEqual(teams.can_join_team(capstone, True), teams.TeamJoinStatus.ALLOWED)
+        self.assertEqual(teams.can_join_team(standard, False), teams.TeamJoinStatus.ALLOWED)
+
+    async def test_create_team_rejects_invalid_creator_with_original_response(self):
+        interaction = make_interaction(make_member(999))
+        cog = teams.TeamsCog(SimpleNamespace())
+
+        await teams.TeamsCog.create_team.callback(
+            cog, interaction, "New Team", make_member(100)
+        )
+
+        self.assertIn(
+            "not verified",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(interaction)
+
+    async def test_create_team_rejects_any_invalid_teammate(self):
+        creator = make_member(101)
+        valid_teammate = make_member(102)
+        self.add_verified(creator.id)
+        self.add_verified(valid_teammate.id)
+        interaction = make_interaction(creator)
+        cog = teams.TeamsCog(SimpleNamespace())
+
+        await teams.TeamsCog.create_team.callback(
+            cog, interaction, "New Team", make_member(999), valid_teammate
+        )
+
+        embed = interaction.edit_original_response.call_args.kwargs["embed"]
+        self.assertIn("<@999> is not a verified participant", embed.description)
+        self.assertIn("No team was created", embed.description)
+        self.assertFalse(records.team_exists("New Team"))
+        self.assertIsNone(records.get_user_team_id(valid_teammate.id))
+        self.assert_deferred_response(interaction)
+
+    async def test_create_team_succeeds_without_validation_warnings(self):
+        creator = make_member(101)
+        teammate = make_member(102)
+        self.add_verified(creator.id)
+        self.add_verified(teammate.id)
+
+        team_role = FakeRole(201)
+        team_role.mention = "<@&201>"
+        text_channel = SimpleNamespace(
+            id=203, mention="#new-team", send=AsyncMock()
+        )
+        voice_channel = SimpleNamespace(id=204)
+        category = SimpleNamespace(
+            id=202,
+            create_text_channel=AsyncMock(return_value=text_channel),
+            create_voice_channel=AsyncMock(return_value=voice_channel),
+        )
+        roles = {
+            config.discord_all_access_pass_role_id: FakeRole(
+                config.discord_all_access_pass_role_id
+            ),
+            config.discord_team_assigned_role_id: FakeRole(
+                config.discord_team_assigned_role_id
+            ),
+            team_role.id: team_role,
+        }
+        guild = SimpleNamespace(
+            id=99,
+            default_role=FakeRole(0),
+            get_role=roles.get,
+            create_role=AsyncMock(return_value=team_role),
+            create_category_channel=AsyncMock(return_value=category),
+        )
+        interaction = make_interaction(creator, guild)
+        cog = teams.TeamsCog(SimpleNamespace())
+
+        await teams.TeamsCog.create_team.callback(cog, interaction, "New Team", teammate)
+
+        embed = interaction.edit_original_response.call_args.kwargs["embed"]
+        self.assertIn("Team created", embed.title)
+        self.assertIn("Team channel: #new-team", embed.description)
+        self.assertEqual(records.get_user_team_id(creator.id), 1)
+        self.assertEqual(records.get_user_team_id(teammate.id), 1)
+        self.assert_deferred_response(interaction)
+
+    async def test_create_team_rejects_duplicate_teammates(self):
+        creator = make_member(101)
+        teammate = make_member(102)
+        self.add_verified(creator.id)
+        self.add_verified(teammate.id)
+        interaction = make_interaction(creator)
+        cog = teams.TeamsCog(SimpleNamespace())
+
+        await teams.TeamsCog.create_team.callback(
+            cog, interaction, "New Team", teammate, teammate
+        )
+
+        embed = interaction.edit_original_response.call_args.kwargs["embed"]
+        self.assertIn("selected more than once", embed.description)
+        self.assertFalse(records.team_exists("New Team"))
+        self.assert_deferred_response(interaction)
+
+    async def test_create_team_cleans_up_when_channel_creation_fails(self):
+        creator = make_member(101)
+        teammate = make_member(102)
+        self.add_verified(creator.id)
+        self.add_verified(teammate.id)
+
+        team_role = FakeRole(201)
+        team_role.delete = AsyncMock()
+        roles = {
+            config.discord_all_access_pass_role_id: FakeRole(
+                config.discord_all_access_pass_role_id
+            )
+        }
+        guild = SimpleNamespace(
+            id=99,
+            default_role=FakeRole(0),
+            get_role=roles.get,
+            create_role=AsyncMock(return_value=team_role),
+            create_category_channel=AsyncMock(
+                side_effect=OSError("Discord unavailable")
+            ),
+        )
+        interaction = make_interaction(creator, guild)
+        cog = teams.TeamsCog(SimpleNamespace())
+
+        await teams.TeamsCog.create_team.callback(cog, interaction, "New Team", teammate)
+
+        team_role.delete.assert_awaited_once()
+        self.assertIn(
+            "No team was created",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assertFalse(records.team_exists("New Team"))
+        self.assert_deferred_response(interaction)
 
     async def test_lfg_toggle_validates_and_toggles_skills(self):
         unverified_interaction = make_interaction(make_member(999))
         await lfg_callback(self.lfg_cog, unverified_interaction)
-        self.assertIn("verify first", unverified_interaction.followup.send.call_args.kwargs["content"])
+        self.assertIn(
+            "verify first",
+            unverified_interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(unverified_interaction)
 
         self.add_verified(100, roles=["mentor"])
         staff_interaction = make_interaction(make_member(100))
         await lfg_callback(self.lfg_cog, staff_interaction)
-        self.assertIn("participant", staff_interaction.followup.send.call_args.kwargs["content"])
+        self.assertIn(
+            "participant",
+            staff_interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(staff_interaction)
         self.assertFalse(records.is_looking(100))
 
         self.add_verified(101)
@@ -131,18 +279,28 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         await lfg_callback(self.lfg_cog, start_interaction)
         self.assertTrue(records.is_looking(101))
         self.assertIn(
-            "now marked", start_interaction.followup.send.call_args.kwargs["content"]
+            "now marked",
+            start_interaction.edit_original_response.call_args.kwargs["content"],
         )
+        self.assert_deferred_response(start_interaction)
 
         update_interaction = make_interaction(user)
         await lfg_callback(self.lfg_cog, update_interaction, "Python")
         self.assertEqual(records.get_lfg_list()[0]["skills"], "Python")
-        self.assertIn("Updated your skills", update_interaction.followup.send.call_args.kwargs["content"])
+        self.assertIn(
+            "Updated your skills",
+            update_interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(update_interaction)
 
         remove_interaction = make_interaction(user)
         await lfg_callback(self.lfg_cog, remove_interaction)
         self.assertFalse(records.is_looking(101))
-        self.assertIn("no longer marked", remove_interaction.followup.send.call_args.kwargs["content"])
+        self.assertIn(
+            "no longer marked",
+            remove_interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(remove_interaction)
 
         self.add_verified(102)
         team_id = records.create_team("Team", False, 201, 202, 203)
@@ -150,7 +308,11 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         team_interaction = make_interaction(make_member(102))
         await lfg_callback(self.lfg_cog, team_interaction, "Rust")
         self.assertFalse(records.is_looking(102))
-        self.assertIn("already on a team", team_interaction.followup.send.call_args.kwargs["content"])
+        self.assertIn(
+            "already on a team",
+            team_interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(team_interaction)
 
     async def test_lfg_view_filters_absent_members_and_formats_skills(self):
         records.add_registration("alice@example.com", "Alice", "One", False, ["participant"])
@@ -170,13 +332,14 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         interaction = make_interaction(make_member(500), guild)
         await lfg_view_callback(self.lfg_cog, interaction)
 
-        embed = interaction.followup.send.call_args.kwargs["embed"]
+        embed = interaction.edit_original_response.call_args.kwargs["embed"]
         self.assertEqual(embed.title, "Looking for a Team (2)")
         self.assertIn("Alice", embed.description)
         self.assertIn("Python", embed.description)
         self.assertIn("nameless#0001", embed.description)
         self.assertIn("_No skills listed_", embed.description)
         self.assertNotIn("Go", embed.description)
+        self.assert_deferred_response(interaction)
 
     async def test_lfg_view_truncates_long_lists(self):
         for member_id in range(100, 130):
@@ -189,16 +352,18 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         interaction = make_interaction(make_member(500), guild)
         await lfg_view_callback(self.lfg_cog, interaction)
 
-        description = interaction.followup.send.call_args.kwargs["embed"].description
+        description = interaction.edit_original_response.call_args.kwargs["embed"].description
         self.assertIn("...and", description)
         self.assertLess(description.count("> " + "x" * 150), 30)
+        self.assert_deferred_response(interaction)
 
     async def test_lfg_view_reports_empty_pool(self):
         interaction = make_interaction(make_member(500), FakeGuild())
         await lfg_view_callback(self.lfg_cog, interaction)
-        embed = interaction.followup.send.call_args.kwargs["embed"]
+        embed = interaction.edit_original_response.call_args.kwargs["embed"]
         self.assertEqual(embed.title, "Looking for a Team")
         self.assertIn("No one is currently looking", embed.description)
+        self.assert_deferred_response(interaction)
 
     async def test_sync_user_roles_adds_removes_and_noops(self):
         member_id = 101
@@ -339,12 +504,83 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             records.add_code("person@example.com", 101, "123456", 10)
             clock.return_value = 110.0
             await verification_callback(self.verification_cog, interaction, "123456")
-        self.assertIn("not valid or has expired", interaction.followup.send.call_args.kwargs["content"])
+        self.assertIn(
+            "not valid or has expired",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(interaction)
 
         records.add_code("person@example.com", 202, "654321", 600)
         wrong_owner = make_interaction(user)
         await verification_callback(self.verification_cog, wrong_owner, "654321")
-        self.assertIn("not associated", wrong_owner.followup.send.call_args.kwargs["content"])
+        self.assertIn(
+            "not associated",
+            wrong_owner.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(wrong_owner)
+
+    async def test_verify_terminal_paths_edit_original_response(self):
+        self.add_verified(101, email="verified@example.com")
+        already_verified = make_interaction(make_member(101))
+        await verification_callback(
+            self.verification_cog, already_verified, "ignored"
+        )
+        self.assertIn(
+            "already verified",
+            already_verified.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(already_verified)
+
+        unregistered = make_interaction(make_member(102))
+        await verification_callback(
+            self.verification_cog, unregistered, "missing@example.com"
+        )
+        self.assertIn(
+            "no user's registered",
+            unregistered.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(unregistered)
+
+        self.add_verified(103, email="taken@example.com")
+        already_used = make_interaction(make_member(104))
+        await verification_callback(
+            self.verification_cog, already_used, "taken@example.com"
+        )
+        self.assertIn(
+            "already verified",
+            already_used.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(already_used)
+
+        records.add_registration(
+            "sent@example.com", "Sent", "User", False, ["participant"]
+        )
+        sent = make_interaction(make_member(105))
+        with patch.object(
+            verification, "send_verification_email", new=AsyncMock(return_value=True)
+        ):
+            await verification_callback(self.verification_cog, sent, "sent@example.com")
+        self.assertIn(
+            "Check your inbox",
+            sent.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(sent)
+
+        records.add_registration(
+            "failed@example.com", "Failed", "User", False, ["participant"]
+        )
+        failed = make_interaction(make_member(106))
+        with patch.object(
+            verification, "send_verification_email", new=AsyncMock(return_value=False)
+        ):
+            await verification_callback(
+                self.verification_cog, failed, "failed@example.com"
+            )
+        self.assertIn(
+            "Failed to send",
+            failed.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(failed)
 
     async def test_verify_success_links_user_removes_code_and_syncs_roles(self):
         user = make_member(101)
@@ -366,7 +602,11 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(records.is_verified(101))
         self.assertFalse(records.code_exists("123456"))
         sync_roles.assert_awaited_once_with(user)
-        self.assertIn("Welcome Pat", interaction.followup.send.call_args.kwargs["content"])
+        self.assertIn(
+            "Welcome Pat",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(interaction)
 
     async def test_verification_email_failure_is_safe(self):
         self.add_verified(101, email="person@example.com")

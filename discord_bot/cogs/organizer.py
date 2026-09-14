@@ -55,7 +55,7 @@ class OrganizerCog(commands.Cog):
         # Check if role is valid to be overified with
         if role not in role_map:
             _log_rejection(interaction, "invalid_role", requested_role=role)
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"`<{role}>` is not a valid role. \nPlease chose either `participant`, `mentor`, or `judge`",
             )
             return
@@ -66,7 +66,7 @@ class OrganizerCog(commands.Cog):
 
             # Check if user has role specified, else add it
             if role in records.get_user_roles(verified_email):
-                await interaction.followup.send(
+                await interaction.edit_original_response(
                     content=f"`<{member_to_promote.name}>` is verified and already has the role `<{role}>`.",
                 )
                 return
@@ -77,7 +77,7 @@ class OrganizerCog(commands.Cog):
                 roles.append(role)
                 records.update_roles(verified_email, roles)
 
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"`<{member_to_promote.name}>` is already verified but has been given the role `<{role}>`.",
             )
 
@@ -89,7 +89,7 @@ class OrganizerCog(commands.Cog):
             records.add_verified_user(
                 email_address, member_to_promote.id, member_to_promote.name
             )
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"`<{member_to_promote.name}>` has been verified and given the role `<{role}>`.",
             )
 
@@ -118,7 +118,7 @@ class OrganizerCog(commands.Cog):
         team_data = records.get_team(team_name)
         if not team_data:
             _log_rejection(interaction, "team_not_found", team_name=team_name)
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"The team `<{team_name}>` could not be found."
             )
             return
@@ -136,7 +136,7 @@ class OrganizerCog(commands.Cog):
                 content=f"Your team has been removed from the event. \nReason: `{reason_for_removal}`. \nYou may create a new team but continued failure to comply may result in being permanently removed"
             )
 
-        await interaction.followup.send(
+        await interaction.edit_original_response(
             content=f"The team `<{team_name}>` has been removed and the members have been notified"
         )
 
@@ -166,9 +166,8 @@ class OrganizerCog(commands.Cog):
             # Check if role is associated with a team
             if not records.team_exists(team_name):
                 _log_rejection(interaction, "team_not_found", team_name=team_name)
-                await interaction.followup.send(
+                await interaction.edit_original_response(
                     content=f"Team `{team_name}` cannot be found. Please use a role that is associated with a valid team",
-                    ephemeral=True,
                 )
                 return
             else:
@@ -183,9 +182,8 @@ class OrganizerCog(commands.Cog):
             # Ensure User is on a Team
             if team_id is None:
                 _log_rejection(interaction, "member_not_on_team", target=target)
-                await interaction.followup.send(
+                await interaction.edit_original_response(
                     content=f"User: {target.mention} is not assigned to a team. No channel can be found.",
-                    ephemeral=True,
                 )
                 return
             else:
@@ -194,14 +192,12 @@ class OrganizerCog(commands.Cog):
 
         # Send the Message
         if text_channel:
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Team #{team_info['id']} - {team_info['name']}\nLink to the team's text channel: {text_channel.mention}",
-                ephemeral=True,
             )
         else:
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="Could not find a channel associated with that target :(",
-                ephemeral=True,
             )
 
     @app_commands.guild_only()
@@ -268,12 +264,11 @@ class OrganizerCog(commands.Cog):
             failed,
         )
 
-        await interaction.followup.send(
+        await interaction.edit_original_response(
             content=(
                 f"Broadcast complete: {succeeded} sent, {failed} failed, "
                 f"{skipped} skipped."
             ),
-            ephemeral=True,
         )
 
     @commands.hybrid_command(name="sync", description="Sync commands (Organizer Only)")
