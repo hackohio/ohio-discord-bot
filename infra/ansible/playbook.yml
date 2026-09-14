@@ -32,7 +32,7 @@
     - name: Make sure config.ini was provided
       ansible.builtin.assert:
         that: config_ini | length > 0
-        fail_msg: CONFIG_INI is empty. Add the contents of config.ini as the CONFIG_INI GitHub secret.
+        fail_msg: CONFIG_INI is empty. Add it as a secret on the selected GitHub environment.
         quiet: true
 
   tasks:

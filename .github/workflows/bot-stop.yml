@@ -6,6 +6,10 @@ name: Stop bot
 on:
   workflow_dispatch:
     inputs:
+      event:
+        description: GitHub environment deployed by Start bot
+        type: environment
+        required: true
       backup_db:
         description: Save records.db to S3 before deleting the server (recommended)
         type: boolean
@@ -15,13 +19,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: bot-infra
+  group: bot-infra-${{ inputs.event }}
   cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-2
+  EVENT: ${{ inputs.event }}
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
+  TF_VAR_instance_name: ohio-discord-bot-${{ inputs.event }}
 
 jobs:
   stop:
@@ -32,6 +38,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Validate event name
+        run: |
+          if [[ ! "$EVENT" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "::error::Event must contain only lowercase letters, numbers, and hyphens."
+            exit 1
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -62,7 +75,7 @@ jobs:
 
       - name: Terraform init
         working-directory: infra/terraform
-        run: terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="region=${AWS_REGION}"
+        run: terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="region=${AWS_REGION}" -backend-config="key=ohio-discord-bot/${EVENT}/terraform.tfstate"
 
       - name: Find the running server
         working-directory: infra/terraform
@@ -92,9 +105,9 @@ jobs:
 
           ssh "${ssh_opts[@]}" "ubuntu@${BOT_IP}" "sudo cat ${db}" > "$RUNNER_TEMP/records.db"
           ts="$(date -u +%Y%m%dT%H%M%SZ)"
-          aws s3 cp "$RUNNER_TEMP/records.db" "s3://${BACKUP_BUCKET}/records-${ts}.db"
-          aws s3 cp "$RUNNER_TEMP/records.db" "s3://${BACKUP_BUCKET}/latest.db"
-          echo "Database backed up to \`s3://${BACKUP_BUCKET}/records-${ts}.db\` (also saved as \`latest.db\`)." >> "$GITHUB_STEP_SUMMARY"
+          aws s3 cp "$RUNNER_TEMP/records.db" "s3://${BACKUP_BUCKET}/${EVENT}/records-${ts}.db"
+          aws s3 cp "$RUNNER_TEMP/records.db" "s3://${BACKUP_BUCKET}/${EVENT}/latest.db"
+          echo "Database backed up to \`s3://${BACKUP_BUCKET}/${EVENT}/records-${ts}.db\` (also saved as \`${EVENT}/latest.db\`)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Delete server (terraform destroy)
         working-directory: infra/terraform
@@ -105,7 +118,7 @@ jobs:
       - name: Summary
         run: |
           echo "## Bot stopped" >> "$GITHUB_STEP_SUMMARY"
-          echo "The Lightsail server has been deleted. Run **Start bot** next time you need it." >> "$GITHUB_STEP_SUMMARY"
+          echo "The Lightsail server for \`${EVENT}\` has been deleted. Run **Start bot** next time you need it." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove secrets from runner
         if: always()

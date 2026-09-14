@@ -6,6 +6,10 @@ name: Start bot
 on:
   workflow_dispatch:
     inputs:
+      event:
+        description: GitHub environment to deploy
+        type: environment
+        required: true
       ref:
         description: Branch, tag, or commit of the bot code to run
         type: string
@@ -18,25 +22,35 @@ on:
 permissions:
   contents: read
 
-# Start and Stop share this group so they can never run at the same time.
+# Start and Stop for the same event can never run at the same time.
 concurrency:
-  group: bot-infra
+  group: bot-infra-${{ inputs.event }}
   cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-2
+  EVENT: ${{ inputs.event }}
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
+  TF_VAR_instance_name: ohio-discord-bot-${{ inputs.event }}
 
 jobs:
   start:
     name: Create server and start bot
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: ${{ inputs.event }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Validate event name
+        run: |
+          if [[ ! "$EVENT" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "::error::Event must contain only lowercase letters, numbers, and hyphens."
+            exit 1
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -56,7 +70,7 @@ jobs:
           CONFIG_INI: ${{ secrets.CONFIG_INI }}
         run: |
           if [ -z "$CONFIG_INI" ]; then
-            echo "::error::The CONFIG_INI secret is missing. Paste the contents of config.ini into it."
+            echo "::error::The selected GitHub environment has no CONFIG_INI secret."
             exit 1
           fi
           port="$(python3 -c 'import configparser, os; c = configparser.ConfigParser(); c.read_string(os.environ["CONFIG_INI"]); print(c.getint("web", "port"))')"
@@ -78,7 +92,7 @@ jobs:
 
       - name: Terraform init
         working-directory: infra/terraform
-        run: terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="region=${AWS_REGION}"
+        run: terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="region=${AWS_REGION}" -backend-config="key=ohio-discord-bot/${EVENT}/terraform.tfstate"
 
       - name: Create server (terraform apply)
         working-directory: infra/terraform
@@ -92,11 +106,11 @@ jobs:
       - name: Download database backup
         if: inputs.restore_db
         run: |
-          if aws s3api head-object --bucket "$BACKUP_BUCKET" --key latest.db > /dev/null 2>&1; then
-            aws s3 cp "s3://${BACKUP_BUCKET}/latest.db" "$RUNNER_TEMP/records.db"
+          if aws s3api head-object --bucket "$BACKUP_BUCKET" --key "${EVENT}/latest.db" > /dev/null 2>&1; then
+            aws s3 cp "s3://${BACKUP_BUCKET}/${EVENT}/latest.db" "$RUNNER_TEMP/records.db"
             echo "RESTORE_DB_FILE=$RUNNER_TEMP/records.db" >> "$GITHUB_ENV"
           else
-            echo "::warning::No backup found in s3://${BACKUP_BUCKET}/latest.db. Starting with a fresh database."
+            echo "::warning::No backup found in s3://${BACKUP_BUCKET}/${EVENT}/latest.db. Starting with a fresh database."
           fi
 
       # GitHub's Ubuntu runners come with Ansible preinstalled; only install if it's missing.
@@ -124,6 +138,7 @@ jobs:
           ## Bot is running
           | | |
           |---|---|
+          | Event | \`${EVENT}\` |
           | Server IP | \`${BOT_IP}\` |
           | Webhook URL | \`${WEBHOOK_URL}\` |
           | Code version | \`${REPO_REF}\` |
@@ -137,7 +152,7 @@ jobs:
         if: failure()
         run: |
           echo "## Start failed" >> "$GITHUB_STEP_SUMMARY"
-          echo "A server may already have been created (and is being billed). Fix the error above and re-run **Start bot**, or run **Stop bot** to delete it." >> "$GITHUB_STEP_SUMMARY"
+          echo "A server for \`${EVENT}\` may already have been created (and is being billed). Fix the error above and re-run **Start bot**, or run **Stop bot** for \`${EVENT}\` to delete it." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove secrets from runner
         if: always()

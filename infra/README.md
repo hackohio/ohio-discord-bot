@@ -1,7 +1,7 @@
 # Running the bot on AWS (on demand)
 
-The bot only needs to run during events, so we don't keep a server around. Two
-buttons in the GitHub **Actions** tab handle it:
+The bot only needs to run during events, so we don't keep servers around. Two
+buttons in the GitHub **Actions** tab manage an independent deployment for each event:
 
 | Workflow | What it does |
 |---|---|
@@ -9,8 +9,8 @@ buttons in the GitHub **Actions** tab handle it:
 | **Stop bot** | Saves `records.db` to S3 (optional), then deletes the server so billing stops. |
 
 ```
-Start bot:  GitHub Actions ──terraform apply──▶ Lightsail server ──ansible──▶ bot running (systemd)
-Stop bot:   GitHub Actions ──copy records.db──▶ S3 backup bucket ──terraform destroy──▶ server gone
+Start bot:  GitHub Actions ──terraform apply──▶ event's Lightsail server ──ansible──▶ bot running
+Stop bot:   GitHub Actions ──copy records.db──▶ event's S3 prefix ──terraform destroy──▶ server gone
 ```
 
 **What's in this folder**
@@ -23,9 +23,12 @@ Stop bot:   GitHub Actions ──copy records.db──▶ S3 backup bucket ─�
 | `../.github/workflows/bot-start.yml`, `bot-stop.yml` | The two buttons. |
 | `../.github/workflows/infra-checks.yml` | Validates the Terraform/Ansible files on every PR. |
 
-**Cost:** the `nano` Lightsail plan is about $5/month, billed by the hour, so a
+Each event gets its own Terraform state, Lightsail server, configuration, database,
+backup prefix, and webhook URL. The state and backup S3 buckets are shared safely.
+
+**Cost:** each `nano` Lightsail server is about $5/month, billed by the hour, so a
 weekend event costs well under $1. The S3 buckets cost a few cents a month.
-Nothing else is billed while the bot is stopped.
+Nothing else is billed while all bots are stopped.
 
 ---
 
@@ -103,19 +106,29 @@ Press Enter twice for no passphrase. This creates `ohio-bot-deploy` (private)
 and `ohio-bot-deploy.pub` (public). Once both are saved as secrets you can
 delete the files.
 
-### 4. Add GitHub secrets
+### 4. Add GitHub secrets and event environments
 
 In the repo, go to **Settings → Secrets and variables → Actions → New repository secret**:
 
-| Secret | Value |
+| Repository secret | Value |
 |---|---|
 | `AWS_ACCESS_KEY_ID` | from step 2 |
 | `AWS_SECRET_ACCESS_KEY` | from step 2 |
 | `SSH_PRIVATE_KEY` | entire contents of `ohio-bot-deploy`, including the `-----BEGIN/END-----` lines |
 | `SSH_PUBLIC_KEY` | contents of `ohio-bot-deploy.pub` |
-| `CONFIG_INI` | entire contents of the bot's `config.ini` (get it from the tech lead) |
 
-To change the bot's config later, edit the `CONFIG_INI` secret and run **Start bot** again.
+Then go to **Settings → Environments** and create one environment per event. Use a
+short lowercase name containing only letters, numbers, and hyphens, such as
+`hackohio-2026` or `makeohio-2026`. In each environment, add an environment secret:
+
+| Environment secret | Value |
+|---|---|
+| `CONFIG_INI` | that event's bot token, Discord IDs, webhook key, and other configuration |
+
+The workflows present these environments as the event choices. Delete any old
+repository-level `CONFIG_INI` secret so a missing environment secret cannot silently
+fall back to the wrong event's configuration. To change one event's config, update
+its `CONFIG_INI` secret and run **Start bot** for that event again.
 
 ---
 
@@ -124,11 +137,12 @@ To change the bot's config later, edit the `CONFIG_INI` secret and run **Start b
 ### Start
 
 1. Go to **Actions → Start bot → Run workflow**.
-2. Leave `ref` as `main`, unless you want a different branch.
-3. Leave **Restore** unticked for a new event. Tick it only to bring back the
-   data from the last **Stop**, for example after restarting mid-event.
-4. Wait about 5 minutes. The run's **Summary** page shows the server IP and **webhook URL**.
-5. Put the webhook URL into the registration/intake system. **It changes every time you run Start.**
+2. Select the event's GitHub environment.
+3. Leave `ref` as `main`, unless you want a different branch.
+4. Leave **Restore** unticked for a new event. Tick it only to bring back that
+   event's data from its last **Stop**, for example after restarting mid-event.
+5. Wait about 5 minutes. The run's **Summary** page shows the server IP and **webhook URL**.
+6. Put the webhook URL into that event's registration/intake system. **It changes whenever its server is recreated.**
 
 To check that the webhook is reachable, send a request with a wrong key. You should get `401`:
 
@@ -139,23 +153,24 @@ curl -i -X POST http://<SERVER_IP>:<PORT>/post/user -H "api-key: wrong" -H "Cont
 ### Stop
 
 1. Go to **Actions → Stop bot → Run workflow**.
-2. Leave **backup** ticked unless you're sure you don't need the data.
-3. When the run finishes, open the **Lightsail console** and confirm there are no instances.
+2. Select the event's GitHub environment.
+3. Leave **backup** ticked unless you're sure you don't need that event's data.
+4. When the run finishes, open the **Lightsail console** and confirm that event's instance is gone.
 
 If the backup step fails (for example, the server is broken), the server is **not** deleted,
 so nothing is lost. Fix the problem, or re-run with backup unticked if you don't need the data.
 
 ### Deploying a code change mid-event
 
-Run **Start bot** again. It reuses the existing server: it pulls the new code,
-restarts the bot, and keeps `records.db`.
+Run **Start bot** again with the same event name. It reuses that event's existing
+server: it pulls the new code, restarts the bot, and keeps `records.db`.
 
 ---
 
 ## Troubleshooting
 
 **The workflow failed.** Open the failed step. Common causes:
-- `CONFIG_INI secret is missing`: step 4 above.
+- `CONFIG_INI secret is missing`: the selected GitHub environment does not have the secret from step 4.
 - `AccessDenied` or `NoSuchBucket`: the bucket names or IAM policy don't match the account ID (steps 1 and 2).
 - Ansible `UNREACHABLE`: the server is still booting. Re-run **Start bot**.
 
@@ -171,7 +186,8 @@ On the server, the bot lives in `/opt/ohio-discord-bot` and runs as the `bot` us
 To restart it: `sudo systemctl restart ohio-bot`.
 
 **I'm not sure if something is still running and costing money.** Check the
-Lightsail console, or just run **Stop bot**. It's safe to run even when nothing exists.
+Lightsail console. Instances are named `ohio-discord-bot-<event>`. **Stop bot** only
+checks and removes the event name entered in that workflow run.
 
 ---
 
