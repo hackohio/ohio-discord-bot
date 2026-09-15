@@ -1,5 +1,6 @@
 """Team creation and membership commands."""
 
+import asyncio
 import logging
 import random
 import time
@@ -19,6 +20,11 @@ logger = logging.getLogger(__name__)
 MAX_TEAM_SIZE = 4
 CAPSTONE_TEAM_SIZE = 5
 TEAM_GRACE_PERIOD = 5 * 60
+_TEAM_OPERATION_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def _team_operation_lock(team_id: int) -> asyncio.Lock:
+    return _TEAM_OPERATION_LOCKS.setdefault(team_id, asyncio.Lock())
 
 
 class TeamJoinStatus(IntEnum):
@@ -31,6 +37,11 @@ class TeamJoinStatus(IntEnum):
 
 async def handle_team_deletion(team_id: int, guild: discord.Guild):  # TESTED
     """Unconditionally remove a team's roles, channels, and database row."""
+    async with _team_operation_lock(team_id):
+        await _handle_team_deletion(team_id, guild)
+
+
+async def _handle_team_deletion(team_id: int, guild: discord.Guild):
     operation_id = uuid.uuid4().hex
     team_data = records.get_team(team_id)
     try:
@@ -41,7 +52,7 @@ async def handle_team_deletion(team_id: int, guild: discord.Guild):  # TESTED
                     guild.get_member(member["discord_id"]) if guild else None
                 )
                 if discord_member:
-                    await perform_team_leave(discord_member, team_id, guild)
+                    await _perform_team_leave(discord_member, team_id, guild)
 
             # Remove all Channels
             await delete_team_channels(team_id, guild)
@@ -130,56 +141,62 @@ def can_join_team(
 async def perform_team_join(
     member: discord.Member, team_id: int, guild: discord.Guild
 ):  # TESTED
-    team_data = records.get_team(team_id)
-    # DB Update
-    records.join_team(member.id, team_id)
+    async with _team_operation_lock(team_id):
+        team_data = records.get_team(team_id)
+        if not records.join_team(member.id, team_id):
+            raise ValueError(f"Member {member.id} is already assigned to a team")
 
-    team_data = records.get_team(team_id)
+        # Get Roles to add
+        roles_to_add = []
+        if team_data and "role_id" in team_data:
+            t_role = guild.get_role(team_data["role_id"])
+            if t_role:
+                roles_to_add.append(t_role)
+        a_role = guild.get_role(config.discord_team_assigned_role_id)
+        if a_role:
+            roles_to_add.append(a_role)
 
-    # Get Roles to add
-    roles_to_add = []
-    if team_data and "role_id" in team_data:
-        t_role = guild.get_role(team_data["role_id"])
-        if t_role:
-            roles_to_add.append(t_role)
-    a_role = guild.get_role(config.discord_team_assigned_role_id)
-    if a_role:
-        roles_to_add.append(a_role)
-
-    # Add Roles to Users
-    if roles_to_add:
-        role_fields = {
-            "guild_id": getattr(guild, "id", None),
-            "team_id": team_id,
-            "role_ids": [role.id for role in roles_to_add],
-            "target_id": member.id,
-        }
-        try:
-            await member.add_roles(*roles_to_add, atomic=False)
-        except Exception:
-            records.leave_team(member.id)
-            raise
+        # Add Roles to Users
+        if roles_to_add:
+            role_fields = {
+                "guild_id": getattr(guild, "id", None),
+                "team_id": team_id,
+                "role_ids": [role.id for role in roles_to_add],
+                "target_id": member.id,
+            }
+            try:
+                await member.add_roles(*roles_to_add, atomic=False)
+            except Exception:
+                records.leave_team(member.id, team_id)
+                raise
+            logger.info(
+                "discord_role_mutation_completed operation='team_join' details=%r",
+                role_fields,
+            )
+        records.remove_from_lfg(member.id)
         logger.info(
-            "discord_role_mutation_completed operation='team_join' details=%r",
-            role_fields,
+            "team_member_join_completed team_id=%r team_name=%r target_id=%r",
+            team_id,
+            team_data.get("name") if team_data else None,
+            member.id,
         )
-    records.remove_from_lfg(member.id)
-    logger.info(
-        "team_member_join_completed team_id=%r team_name=%r target_id=%r",
-        team_id,
-        team_data.get("name") if team_data else None,
-        member.id,
-    )
 
 
 async def perform_team_leave(
     member: discord.Member, team_id: int, guild: discord.Guild
 ):  # TESTED
+    async with _team_operation_lock(team_id):
+        await _perform_team_leave(member, team_id, guild)
 
+
+async def _perform_team_leave(
+    member: discord.Member, team_id: int, guild: discord.Guild
+):
     team_data = records.get_team(team_id)
 
     # Drop Team
-    records.leave_team(member.id)
+    if not records.leave_team(member.id, team_id):
+        raise ValueError(f"Member {member.id} is not assigned to team {team_id}")
 
     # Get Roles to Remove
     roles_to_remove = []
@@ -322,20 +339,29 @@ class TeamsCog(commands.Cog):
                 continue
             team_id = pending["id"]
             try:
-                if not records.team_exists(team_id):
-                    continue
-                size = records.get_team_size(team_id)
-                if size >= 2:
-                    records.clear_grace_period(team_id)
+                if records.get_team_size(team_id) == 1:
+                    await _notify_remaining_member(team_id, guild)
+
+                recovered = False
+                async with _team_operation_lock(team_id):
+                    team_data = records.get_team(team_id)
+                    if not team_data:
+                        continue
+                    deadline = team_data.get("grace_period")
+                    if deadline is None or deadline > time.time():
+                        continue
+                    if records.get_team_size(team_id) >= 2:
+                        records.clear_grace_period(team_id)
+                        recovered = True
+                    else:
+                        await _handle_team_deletion(team_id, guild)
+
+                if recovered:
                     await _notify_team_channel(
                         team_id,
                         guild,
                         "Your team has at least two members again. Pending deletion has been cancelled.",
                     )
-                else:
-                    if size == 1:
-                        await _notify_remaining_member(team_id, guild)
-                    await handle_team_deletion(team_id, guild)
             except Exception:
                 logger.exception("team_grace_period_cleanup_failed team_id=%r", team_id)
 

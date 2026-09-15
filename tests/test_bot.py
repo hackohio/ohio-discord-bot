@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -239,6 +240,71 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(records.get_user_team_id(creator.id), 1)
         self.assertEqual(records.get_user_team_id(teammate.id), 1)
         self.assert_deferred_response(interaction)
+
+    async def test_create_team_rolls_back_if_teammate_is_claimed_during_setup(self):
+        creator = make_member(101)
+        teammate = make_member(102)
+        self.add_verified(creator.id)
+        self.add_verified(teammate.id)
+        self.add_verified(103)
+        old_team_id = records.create_team("Old Team", False, 301, 302, 303)
+        records.join_team(103, old_team_id)
+
+        team_role = FakeResource(201)
+        team_role.mention = "<@&201>"
+        text_channel = FakeResource(203)
+        text_channel.mention = "#new-team"
+        text_channel.send = AsyncMock()
+        voice_channel = FakeResource(204)
+        category = FakeResource(202)
+        category.create_text_channel = AsyncMock(return_value=text_channel)
+        category.create_voice_channel = AsyncMock(return_value=voice_channel)
+
+        def claim_teammate(*args, **kwargs):
+            records.join_team(teammate.id, old_team_id)
+            return category
+
+        roles = {
+            config.discord_all_access_pass_role_id: FakeRole(
+                config.discord_all_access_pass_role_id
+            ),
+            config.discord_team_assigned_role_id: FakeRole(
+                config.discord_team_assigned_role_id
+            ),
+            team_role.id: team_role,
+        }
+        channels = {202: category, 203: text_channel, 204: voice_channel}
+        members = {creator.id: creator, teammate.id: teammate}
+        guild = SimpleNamespace(
+            id=99,
+            default_role=FakeRole(0),
+            get_role=roles.get,
+            get_channel=channels.get,
+            get_member=members.get,
+            create_role=AsyncMock(return_value=team_role),
+            create_category_channel=AsyncMock(side_effect=claim_teammate),
+        )
+        creator.guild = guild
+        teammate.guild = guild
+        interaction = make_interaction(creator, guild)
+
+        await teams.TeamsCog.create_team.callback(
+            teams.TeamsCog(SimpleNamespace()), interaction, "New Team", teammate
+        )
+
+        self.assertEqual(records.get_user_team_id(teammate.id), old_team_id)
+        self.assertEqual(records.get_team_size(old_team_id), 2)
+        self.assertIsNone(records.get_team(old_team_id)["grace_period"])
+        self.assertIsNone(records.get_user_team_id(creator.id))
+        self.assertFalse(records.team_exists("New Team"))
+        self.assertIn(
+            "No team was created",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        teammate.add_roles.assert_not_awaited()
+        creator.remove_roles.assert_awaited_once()
+        for resource in (team_role, text_channel, voice_channel, category):
+            resource.delete.assert_awaited_once()
 
     async def test_create_team_rejects_duplicate_teammates(self):
         creator = make_member(101)
@@ -627,6 +693,61 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(records.team_exists(team_id))
         self.assertIsNone(records.get_team(team_id)["grace_period"])
 
+    async def test_cleanup_rechecks_team_after_deletion_dm(self):
+        team_id, guild, members, _ = self.make_team(
+            [101], lead=101, grace_period=99.0
+        )
+        self.add_verified(102)
+
+        def recover_team(*args, **kwargs):
+            records.join_team(102, team_id)
+
+        members[101].send.side_effect = recover_team
+
+        await self.run_grace_period_cleanup(guild)
+
+        self.assertTrue(records.team_exists(team_id))
+        self.assertEqual(records.get_team_size(team_id), 2)
+        self.assertIsNone(records.get_team(team_id)["grace_period"])
+        guild.get_role(201).delete.assert_not_awaited()
+
+    async def test_cleanup_rechecks_extended_deadline_after_deletion_dm(self):
+        team_id, guild, members, _ = self.make_team(
+            [101], lead=101, grace_period=99.0
+        )
+        members[101].send.side_effect = lambda **kwargs: records.set_grace_period(
+            team_id, 200.0
+        )
+
+        with patch("discord_bot.cogs.teams.time.time", return_value=100.0):
+            await self.run_grace_period_cleanup(guild)
+
+        self.assertTrue(records.team_exists(team_id))
+        self.assertEqual(records.get_team(team_id)["grace_period"], 200.0)
+        guild.get_role(201).delete.assert_not_awaited()
+
+    async def test_concurrent_team_deletions_are_serialized(self):
+        team_id, guild, members, _ = self.make_team([101], lead=101)
+        deletion_started = asyncio.Event()
+        allow_deletion = asyncio.Event()
+
+        async def pause_role_removal(*args, **kwargs):
+            deletion_started.set()
+            await allow_deletion.wait()
+
+        members[101].remove_roles.side_effect = pause_role_removal
+        first = asyncio.create_task(teams.handle_team_deletion(team_id, guild))
+        await deletion_started.wait()
+        second = asyncio.create_task(teams.handle_team_deletion(team_id, guild))
+        await asyncio.sleep(0)
+        allow_deletion.set()
+
+        results = await asyncio.gather(first, second, return_exceptions=True)
+
+        self.assertEqual(results, [None, None])
+        self.assertFalse(records.team_exists(team_id))
+        guild.get_role(201).delete.assert_awaited_once()
+
     async def test_empty_team_is_deleted_immediately(self):
         team_id, guild, _, _ = self.make_team([])
 
@@ -650,14 +771,15 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(team["grace_period"])
 
     async def test_failed_cleanup_remains_eligible_for_retry(self):
-        team_id, guild, _, _ = self.make_team([101], lead=101, grace_period=99.0)
-        deletion = AsyncMock(side_effect=OSError("Discord unavailable"))
+        team_id, guild, members, _ = self.make_team(
+            [101], lead=101, grace_period=99.0
+        )
+        members[101].remove_roles.side_effect = OSError("Discord unavailable")
 
-        with patch.object(teams, "handle_team_deletion", new=deletion):
-            await self.run_grace_period_cleanup(guild)
+        await self.run_grace_period_cleanup(guild)
 
-        deletion.assert_awaited_once_with(team_id, guild)
         self.assertTrue(records.team_exists(team_id))
+        self.assertEqual(records.get_user_team_id(101), team_id)
         self.assertEqual(len(records.get_all_grace_periods()), 1)
 
     async def test_organizer_removal_stays_immediate(self):

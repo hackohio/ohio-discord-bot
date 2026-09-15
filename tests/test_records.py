@@ -130,6 +130,17 @@ class RecordsTestCase(DatabaseTestCase):
         self.assertIsNone(records.get_user_team_id(101))
         self.assertIsNone(records.get_user_team_id(102))
 
+    def test_join_team_does_not_move_an_assigned_member(self):
+        self.add_verified(101)
+        first_team = records.create_team("First", False, 201, 202, 203)
+        second_team = records.create_team("Second", False, 301, 302, 303)
+        self.assertTrue(records.join_team(101, first_team))
+
+        claimed = records.join_team(101, second_team)
+
+        self.assertFalse(claimed)
+        self.assertEqual(records.get_user_team_id(101), first_team)
+
     def test_next_team_id_follows_autoincrement_after_deletion(self):
         first = records.create_team("First", False, 1, 2, 3)
         records.remove_team(first)

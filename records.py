@@ -337,26 +337,48 @@ def get_verified_email(discord_id: int) -> str:
         return row["email"] if row else None
 
 
-def join_team(discord_id: int, team_id: int):
-    """Assigns a verified user to a team."""
+def join_team(discord_id: int, team_id: int) -> bool:
+    """Assign an unassigned verified user to a team."""
     with _LOCK, _get_connection() as conn:
-        conn.execute(
-            f"UPDATE {_VERIFIED_TABLE_NAME} SET team_id = ? WHERE discord_id = ?",
+        cursor = conn.execute(
+            f"""
+            UPDATE {_VERIFIED_TABLE_NAME}
+            SET team_id = ?
+            WHERE discord_id = ? AND team_id IS NULL
+            """,
             (team_id, discord_id),
         )
         conn.commit()
-    logger.debug("team_member_assigned discord_id=%r team_id=%r", discord_id, team_id)
-
-
-def leave_team(discord_id: int):
-    """Removes a user from their team"""
-    with _LOCK, _get_connection() as conn:
-        conn.execute(
-            f"UPDATE {_VERIFIED_TABLE_NAME} SET team_id = NULL WHERE discord_id = ?",
-            (discord_id,),
+    claimed = cursor.rowcount == 1
+    if claimed:
+        logger.debug(
+            "team_member_assigned discord_id=%r team_id=%r", discord_id, team_id
         )
+    return claimed
+
+
+def leave_team(discord_id: int, team_id: int | None = None) -> bool:
+    """Remove a user from their current or expected team."""
+    with _LOCK, _get_connection() as conn:
+        if team_id is None:
+            cursor = conn.execute(
+                f"UPDATE {_VERIFIED_TABLE_NAME} SET team_id = NULL WHERE discord_id = ?",
+                (discord_id,),
+            )
+        else:
+            cursor = conn.execute(
+                f"""
+                UPDATE {_VERIFIED_TABLE_NAME}
+                SET team_id = NULL
+                WHERE discord_id = ? AND team_id = ?
+                """,
+                (discord_id, team_id),
+            )
         conn.commit()
-    logger.debug("team_member_unassigned discord_id=%r", discord_id)
+    removed = cursor.rowcount == 1
+    if removed:
+        logger.debug("team_member_unassigned discord_id=%r", discord_id)
+    return removed
 
 
 def get_user_team_id(identifier) -> int:
