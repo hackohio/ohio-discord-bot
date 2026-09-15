@@ -71,10 +71,22 @@ class RecordsTestCase(DatabaseTestCase):
             records.add_verified_user("missing@example.com", 101, "missing#0001")
         self.assertFalse(records.is_verified(101))
 
+    def test_add_verified_user_reports_success(self):
+        records.add_registration(
+            "person@example.com", "Pat", "Person", False, ["participant"]
+        )
+
+        self.assertTrue(
+            records.add_verified_user("person@example.com", 101, "person#0001")
+        )
+
     def test_verified_lookup_removal_and_same_email_is_noop(self):
         self.add_verified(101, email="person@example.com", username="person#0001")
-        records.add_verified_user("person@example.com", 202, "replacement#0001")
+        added = records.add_verified_user(
+            "person@example.com", 202, "replacement#0001"
+        )
 
+        self.assertFalse(added)
         self.assertEqual(records.get_verified_email(101), "person@example.com")
         self.assertIsNone(records.get_verified_email(202))
         self.assertTrue(records.is_verified("person@example.com"))
@@ -86,6 +98,17 @@ class RecordsTestCase(DatabaseTestCase):
         records.remove_verified_user("person@example.com")
         self.assertFalse(records.is_verified(101))
         self.assertIsNone(records.get_verified_user(101))
+
+    def test_add_verified_user_can_replace_an_existing_email_owner(self):
+        self.add_verified(101, email="person@example.com", username="first#0001")
+
+        self.assertTrue(
+            records.add_verified_user(
+                "person@example.com", 202, "replacement#0001", replace=True
+            )
+        )
+        self.assertFalse(records.is_verified(101))
+        self.assertEqual(records.get_verified_email(202), "person@example.com")
 
     def test_verified_discord_id_and_username_are_unique(self):
         self.add_verified(101, email="one@example.com", username="one#0001")

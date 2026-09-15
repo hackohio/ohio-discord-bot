@@ -783,6 +783,65 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(records.get_user_team_id(101), team_id)
         self.assertEqual(len(records.get_all_grace_periods()), 1)
 
+    def test_sensitive_organizer_commands_have_runtime_authorization(self):
+        from discord_bot.cogs import organizer
+
+        outsider = make_member(900)
+        outsider.guild_permissions = SimpleNamespace(administrator=False)
+        outsider.get_role = lambda role_id: None
+        admin = make_member(901)
+        admin.guild_permissions = SimpleNamespace(administrator=True)
+        admin.get_role = lambda role_id: None
+        organizer_member = make_member(902)
+        organizer_member.guild_permissions = SimpleNamespace(administrator=False)
+        organizer_role = FakeRole(config.discord_organizer_role_id)
+        organizer_member.get_role = lambda role_id: (
+            organizer_role if role_id == organizer_role.id else None
+        )
+
+        for command in (
+            organizer.OrganizerCog.overify,
+            organizer.OrganizerCog.remove_team,
+            organizer.OrganizerCog.broadcast,
+        ):
+            self.assertEqual(len(command.checks), 1)
+            self.assertFalse(command.checks[0](make_interaction(outsider)))
+            self.assertTrue(command.checks[0](make_interaction(admin)))
+            self.assertTrue(command.checks[0](make_interaction(organizer_member)))
+
+    async def test_overify_reassigns_email_linked_to_another_account(self):
+        from discord_bot.cogs import organizer
+
+        self.add_verified(101, email="attendee@example.com")
+        target = make_member(102)
+        interaction = make_interaction(make_member(999))
+
+        with patch.object(organizer, "sync_user_roles", new=AsyncMock()) as sync_roles:
+            await organizer.OrganizerCog.overify.callback(
+                organizer.OrganizerCog(SimpleNamespace()),
+                interaction,
+                target,
+                "attendee@example.com",
+                "Different",
+                "Person",
+                True,
+                "mentor",
+            )
+
+        registration = records.get_registration("attendee@example.com")
+        self.assertEqual(registration["first_name"], "Different")
+        self.assertEqual(registration["last_name"], "Person")
+        self.assertEqual(registration["is_capstone"], 1)
+        self.assertEqual(records.get_user_roles("attendee@example.com"), ["mentor"])
+        self.assertFalse(records.is_verified(101))
+        self.assertEqual(records.get_verified_email(target.id), "attendee@example.com")
+        self.assertIn(
+            "has been verified",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        sync_roles.assert_awaited_once_with(target)
+        self.assert_deferred_response(interaction)
+
     async def test_organizer_removal_stays_immediate(self):
         from discord_bot.cogs import organizer
 
@@ -799,6 +858,53 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(records.team_exists(team_id))
         self.assertIsNone(records.get_user_team_id(101))
         self.assertIsNone(records.get_user_team_id(102))
+
+    async def test_organizer_removal_continues_when_member_dm_fails(self):
+        from discord_bot.cogs import organizer
+
+        team_id, guild, members, _ = self.make_team([101, 102], lead=101)
+        members[101].send.side_effect = OSError("DMs blocked")
+        interaction = make_interaction(make_member(999), guild)
+
+        await organizer.OrganizerCog.remove_team.callback(
+            organizer.OrganizerCog(SimpleNamespace()),
+            interaction,
+            guild.get_role(201),
+            "cleanup",
+        )
+
+        self.assertFalse(records.team_exists(team_id))
+        members[101].send.assert_awaited_once()
+        members[102].send.assert_awaited_once()
+        response = interaction.edit_original_response.call_args.kwargs["content"]
+        self.assertIn("has been removed", response)
+        self.assertIn("1 of 2 members were notified", response)
+
+    async def test_organizer_removal_reports_cleanup_failure(self):
+        from discord_bot.cogs import organizer
+
+        team_id, guild, members, _ = self.make_team([101, 102], lead=101)
+        interaction = make_interaction(make_member(999), guild)
+
+        with patch.object(
+            organizer,
+            "handle_team_deletion",
+            new=AsyncMock(side_effect=OSError("Discord unavailable")),
+        ):
+            await organizer.OrganizerCog.remove_team.callback(
+                organizer.OrganizerCog(SimpleNamespace()),
+                interaction,
+                guild.get_role(201),
+                "cleanup",
+            )
+
+        self.assertTrue(records.team_exists(team_id))
+        members[101].send.assert_not_awaited()
+        members[102].send.assert_not_awaited()
+        self.assertIn(
+            "could not be removed",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
 
     async def test_team_channel_deletion_skips_missing_and_surfaces_failures(self):
         team_id = records.create_team("Team", False, 201, 202, 203, 204)
@@ -943,6 +1049,22 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             failed.edit_original_response.call_args.kwargs["content"],
         )
         self.assert_deferred_response(failed)
+
+    async def test_verify_code_rejects_email_claimed_by_another_account(self):
+        user = make_member(101)
+        self.add_verified(202, email="person@example.com")
+        records.add_code("person@example.com", user.id, "123456", 600)
+        interaction = make_interaction(user)
+
+        await verification_callback(self.verification_cog, interaction, "123456")
+
+        self.assertFalse(records.is_verified(user.id))
+        self.assertTrue(records.code_exists("123456"))
+        self.assertIn(
+            "already linked",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assert_deferred_response(interaction)
 
     async def test_verify_success_links_user_removes_code_and_syncs_roles(self):
         user = make_member(101)

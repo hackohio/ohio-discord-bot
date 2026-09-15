@@ -255,27 +255,30 @@ def get_user_roles(email: str) -> list:
 # ------------- Verified Table Functions -----------------
 
 
-def add_verified_user(email: str, discord_id: int, username: str):
-    """Links a Discord user to a registration."""
-
-    # Do not re-verify someone already here
-    if is_verified(email):
-        logger.info("verified_user_already_exists email=%r", email)
-        return
-
+def add_verified_user(
+    email: str, discord_id: int, username: str, *, replace: bool = False
+) -> bool:
+    """Link a Discord user to a registration, optionally replacing its owner."""
     with _LOCK, _get_connection() as conn:
-        conn.execute(
+        if replace:
+            conn.execute(
+                f"DELETE FROM {_VERIFIED_TABLE_NAME} WHERE email = ?", (email,)
+            )
+        cursor = conn.execute(
             f"""
             INSERT INTO {_VERIFIED_TABLE_NAME} (email, discord_id, username)
             VALUES (?, ?, ?)
-            ON CONFLICT(email) DO UPDATE SET
-                discord_id = excluded.discord_id,
-                username = excluded.username
-        """,
+            ON CONFLICT(email) DO NOTHING
+            """,
             (email, discord_id, username),
         )
         conn.commit()
-    logger.debug("verified_user_added email=%r discord_id=%r", email, discord_id)
+    added = cursor.rowcount == 1
+    if added:
+        logger.debug("verified_user_added email=%r discord_id=%r", email, discord_id)
+    else:
+        logger.info("verified_user_already_exists email=%r", email)
+    return added
 
 
 def remove_verified_user(email: str):

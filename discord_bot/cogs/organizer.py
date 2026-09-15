@@ -16,12 +16,21 @@ from discord_bot.common import _log_rejection, audit_command, create_embed
 logger = logging.getLogger(__name__)
 
 
+def _is_administrator_or_organizer(interaction: discord.Interaction) -> bool:
+    member = cast(discord.Member, interaction.user)
+    return (
+        member.guild_permissions.administrator
+        or member.get_role(config.discord_organizer_role_id) is not None
+    )
+
+
 class OrganizerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
+    @app_commands.check(_is_administrator_or_organizer)
     @app_commands.command(
         name="overify",
         description="Manually verify a Discord account for this event (Organizers only)",
@@ -99,9 +108,16 @@ class OrganizerCog(commands.Cog):
             records.add_registration(
                 email_address, first_name, last_name, is_capstone, roles_to_add
             )
-            records.add_verified_user(
-                email_address, member_to_promote.id, member_to_promote.name
-            )
+            if not records.add_verified_user(
+                email_address,
+                member_to_promote.id,
+                member_to_promote.name,
+                replace=True,
+            ):
+                await interaction.edit_original_response(
+                    content="That email address could not be linked to this Discord account. No roles were changed.",
+                )
+                return
             await interaction.edit_original_response(
                 content=f"`<{member_to_promote.name}>` has been verified and given the role `<{role}>`.",
             )
@@ -111,6 +127,7 @@ class OrganizerCog(commands.Cog):
 
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
+    @app_commands.check(_is_administrator_or_organizer)
     @app_commands.command(
         name="remove_team", description="Remove Team (Organizers only)"
     )
@@ -144,21 +161,39 @@ class OrganizerCog(commands.Cog):
 
         # ------------- Happy Case --------------------
 
-        # Notify team and admin about removal
+        try:
+            await handle_team_deletion(team_id, interaction.guild)
+        except Exception:
+            logger.exception("organizer_team_removal_failed team_id=%r", team_id)
+            await interaction.edit_original_response(
+                content=f"The team `<{team_name}>` could not be removed. Please retry or inspect the team resources manually."
+            )
+            return
+
+        notification_failures = 0
         for member in members:
             member_obj = interaction.guild.get_member(member["discord_id"])
             if not member_obj:
+                notification_failures += 1
                 continue
-            await member_obj.send(
-                content=f"Your team has been removed from the event. \nReason: `{reason_for_removal}`. \nYou may create a new team but continued failure to comply may result in being permanently removed"
-            )
+            try:
+                await member_obj.send(
+                    content=f"Your team has been removed from the event. \nReason: `{reason_for_removal}`. \nYou may create a new team but continued failure to comply may result in being permanently removed"
+                )
+            except Exception:
+                notification_failures += 1
+                logger.exception(
+                    "organizer_team_removal_dm_failed team_id=%r member_id=%r",
+                    team_id,
+                    member["discord_id"],
+                )
 
         await interaction.edit_original_response(
-            content=f"The team `<{team_name}>` has been removed and the members have been notified"
+            content=(
+                f"The team `<{team_name}>` has been removed. "
+                f"{len(members) - notification_failures} of {len(members)} members were notified."
+            )
         )
-
-        # Remove channels and remove team stats from members
-        await handle_team_deletion(team_id, interaction.guild)
 
     @app_commands.guild_only()
     @app_commands.checks.has_any_role(
@@ -220,6 +255,7 @@ class OrganizerCog(commands.Cog):
 
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
+    @app_commands.check(_is_administrator_or_organizer)
     @app_commands.command(
         name="broadcast", description="Broadcast a message to each team channel"
     )

@@ -276,7 +276,12 @@ class VerificationCog(commands.Cog):
             email = code_info["email"]
 
             # Add user to verified database
-            records.add_verified_user(email, user.id, user.name)
+            if not records.add_verified_user(email, user.id, user.name):
+                _log_rejection(interaction, "email_already_verified", email=email)
+                await interaction.edit_original_response(
+                    content="That email address is already linked to another Discord account.",
+                )
+                return
             records.remove_code(code)
 
             # Assign user with all given roles
