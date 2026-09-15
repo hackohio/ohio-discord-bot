@@ -292,16 +292,25 @@ class OrganizerCog(commands.Cog):
     @commands.hybrid_command(name="sync", description="Sync commands (Organizer Only)")
     @app_commands.default_permissions(administrator=True)
     @commands.has_permissions(administrator=True)
-    @app_commands.describe(spec="Scope of the sync (Local, Global, or Clear)")
+    @app_commands.describe(spec="Scope of the sync")
+    @app_commands.choices(
+        spec=[
+            app_commands.Choice(name="local", value="local"),
+            app_commands.Choice(name="global", value="global"),
+            app_commands.Choice(name="global clear", value="global-clear"),
+            app_commands.Choice(name="clear", value="clear"),
+        ]
+    )
     @audit_command
     async def sync(self, ctx: commands.Context, spec: str):
         """
         Syncs the bot commands.
         Usage:
         /sync [spec]
-          - local    : Copy global commands to current server (Instant Dev)
-          - global   : Sync globally (Takes 1 hour)
-          - clear    : Wipe local commands
+          - local        : Copy global commands to current server (Instant Dev)
+          - global       : Sync globally (Takes 1 hour)
+          - global-clear : Remove all global commands
+          - clear        : Wipe local commands
         """
 
         await ctx.defer(ephemeral=True)
@@ -329,6 +338,18 @@ class OrganizerCog(commands.Cog):
             await ctx.send(
                 f"🌎 **Global Sync:** Synced {len(synced)} commands globally. (Updates may take up to 1 hour).",
             )
+            return
+
+        if spec.lower() == "global-clear":
+            global_commands = self.bot.tree.get_commands()
+            self.bot.tree.clear_commands(guild=None)
+            try:
+                await self.bot.tree.sync()
+            finally:
+                for command in global_commands:
+                    self.bot.tree.add_command(command)
+            logger.info("command_sync_completed scope=%r", "global-clear")
+            await ctx.send("🧹 Cleared all global commands.")
             return
 
         if spec.lower() == "clear":
