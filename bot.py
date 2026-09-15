@@ -1,3 +1,5 @@
+from time import time
+
 import records
 import config
 
@@ -57,7 +59,28 @@ def generate_random_code(n): # TESTED
         str: A random string of specified length, containing digits.
     """
     characters = '0123456789'
-    return ''.join(random.choices(characters, k=n))    
+    return ''.join(random.choices(characters, k=n))   
+
+team_timers = {}
+async def team_grace_period(team_id):
+    try:
+        await asyncio.sleep(600)
+
+        if records.get_team_size(team_id) == 1:
+            await handle_team_deletion(team_id)
+
+    finally:
+        team_timers.pop(team_id, None)
+        records.clear_grace_period(team_id)
+
+async def restore_team_grace_periods():
+    now = int(time.time())
+    for team_id, expires_at in records.get_all_grace_periods():
+        remaining_time = expires_at - now
+        if remaining_time > 0:
+            team_timers[team_id] = asyncio.create_task(team_grace_period(team_id))
+        else:
+            await handle_team_deletion(team_id)
 
 async def sync_user_roles(member: discord.Member): # TESTED
     """
@@ -456,7 +479,7 @@ async def create_team(interaction: discord.Interaction, team_name: str, teammate
             case 0:
                 valid_members.append(mem)
 
-    if not valid_members:
+    if len(valid_members) < 1:
         await interaction.followup.send(ephemeral=True, content=f"Team creation failed - No teammates could be added. \nChoose a different teammate or reach out to them to fix their problem.")
         return
 
@@ -531,7 +554,7 @@ async def create_team(interaction: discord.Interaction, team_name: str, teammate
             inline=False
         )
     await text_channel.send(embed=welcome_embed)
-
+    
     # Add Author and Valid Teammates to team
     await perform_team_join(user, team_id)  # Add author to team
     records.set_team_lead(team_id, user.id) # Make author team_lead
@@ -577,12 +600,28 @@ async def leave_team(interaction: discord.Interaction): # TESTED
     await interaction.followup.send(content=f"You have successfully been removed from the team {team_role.mention}")
 
     # Delete team if no one is left
+    team_text_channel = interaction.guild.get_channel(team_data['text_id'])
     if records.get_team_size(team_id) == 0: await handle_team_deletion(team_id); return
 
+    # Delete team if only one member remains
+    if records.get_team_size(team_id) == 1: 
+        await team_text_channel.send(embed=create_embed("Team Warning", 
+            "Your team currently only has **one member** remaining.\n\n"
+            "You have **10 minutes** to add another eligible teammate. "
+            "If your team still has only one member after 10 minutes, "
+            "the team will be automatically deleted."
+            )
+        )
+                
+        # Start the 10-minute grace period
+        if records.get_team_size(team_id) == 1:
+            if team_id not in team_timers:
+                team_timers[team_id] = asyncio.create_task(team_grace_period(team_id))
+                records.set_deletion_timer(team_id, team_timers[team_id])
+                
     # If they were team lead, replace team_lead
     team_lead_id = team_data['team_lead']
     if team_lead_id == user.id:
-
         # Chose a random other teammate to assign as lead
         new_lead_id = random.choice(records.get_team_members(team_id))['discord_id']        
         records.set_team_lead(team_id, new_lead_id)
@@ -590,6 +629,7 @@ async def leave_team(interaction: discord.Interaction): # TESTED
 
     else:
         await team_text_channel.send(embed=create_embed("👋 Teammate Left!", f"{user.mention} has left the team."))  
+
 
 @app_commands.guild_only()
 @bot.tree.command(name="add_member", description="Add a member to your team")
@@ -773,6 +813,21 @@ async def my_team(interaction: discord.Interaction):
         return
 
     team_members = records.get_team_members(team_id)
+
+    # Delete team if only one member remains
+    if records.get_team_size(team_id) == 1: 
+        await team_text_channel.send(embed=create_embed("Team Warning", 
+            "Your team currently only has **one member** remaining.\n\n"
+            "You have **10 minutes** to add another eligible teammate. "
+            "If your team still has only one member after 10 minutes, "
+            "the team will be automatically deleted."
+            )
+        )
+        # Start the 10-minute grace period
+        if records.get_team_size(team_id) == 1:
+            if team_id not in team_timers:
+                team_timers[team_id] = asyncio.create_task(team_grace_period(team_id))
+                records.set_grace_period(team_id, int(time.time()) + 600)
 
     # Format member list
     mentions = []
@@ -1113,7 +1168,9 @@ async def sync(ctx: commands.Context, spec: str):
 async def on_ready(): 
     print(f'Logged in as {bot.user}')
    
-def start(): bot.run(config.discord_token)
+def start(): 
+    bot.run(config.discord_token)
+    restore_team_grace_periods()
 # ------------------------------------------------------------------
 
 # TODO: Rewrite web.py with new db material and same with export/import
