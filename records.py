@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+import asyncio
 
 
 # ============================== NEW SCHEMA =======================================
@@ -35,6 +36,7 @@ Team Table: {
     Category_ID: BIGINT - NOT NULL
     Text_ID:     BIGINT - NOT NULL
     Voice_ID:    BIGINT
+    Grace_Period: INTEGER
 }
 
 Code Table {
@@ -329,8 +331,8 @@ def create_team(name: str, is_capstone: bool, role_id: int, category_id: int, te
     """ Creates a new team and returns its new database ID. """
     with _LOCK, _get_connection() as conn:
         cursor = conn.execute(f"""
-            INSERT INTO {_TEAM_TABLE_NAME} (name, is_capstone, role_id, category_id, text_id, voice_id) 
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO {_TEAM_TABLE_NAME} (name, is_capstone, role_id, category_id, text_id, voice_id, valid_team) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (name, is_capstone, role_id, category_id, text_id, voice_id))
         conn.commit()
         return cursor.lastrowid
@@ -450,6 +452,24 @@ def get_team_members(identifier) -> list:
             raise ValueError("Identifier must be int (ID) or str (Name)")
         
         # Convert list of Row objects to list of dicts
+        return [dict(row) for row in rows]
+
+def set_grace_period(team_id: int, expires_at: int):
+    """ Sets the grace period timer for a specific team. """
+    with _LOCK, _get_connection() as conn:
+        conn.execute(f"UPDATE {_TEAM_TABLE_NAME} SET grace_period = ? WHERE id = ?", (expires_at, team_id))
+        conn.commit()
+
+def clear_grace_period(team_id: int):
+    """ Clears the grace period timer for a specific team. """
+    with _LOCK, _get_connection() as conn:
+        conn.execute(f"UPDATE {_TEAM_TABLE_NAME} SET grace_period = NULL WHERE id = ?", (team_id,))
+        conn.commit()
+
+def get_all_grace_periods() -> list:
+    """ Returns a list of all teams with active grace periods. """
+    with _get_connection() as conn:
+        rows = conn.execute(f"SELECT id, name, grace_period FROM {_TEAM_TABLE_NAME} WHERE grace_period IS NOT NULL").fetchall()
         return [dict(row) for row in rows]
 
 # ---------------- Code Table Functions -----------------
