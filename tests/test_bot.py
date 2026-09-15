@@ -468,13 +468,54 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         await teams.perform_team_join(member, team_id, guild)
         self.assertEqual(records.get_user_team_id(101), team_id)
         self.assertFalse(records.is_looking(101))
-        member.add_roles.assert_awaited_once_with(team_role, assigned_role)
+        member.add_roles.assert_awaited_once_with(
+            team_role, assigned_role, atomic=False
+        )
 
         member.add_roles.reset_mock()
         await teams.perform_team_leave(member, team_id, guild)
 
         self.assertIsNone(records.get_user_team_id(101))
-        member.remove_roles.assert_awaited_once_with(team_role, assigned_role)
+        member.remove_roles.assert_awaited_once_with(
+            team_role, assigned_role, atomic=False
+        )
+
+    async def test_failed_team_role_addition_rolls_back_membership(self):
+        self.add_verified(101)
+        team_id = records.create_team("Team", False, 201, 202, 203, 204)
+        team_role = FakeRole(201)
+        assigned_role = FakeRole(config.discord_team_assigned_role_id)
+        guild = FakeGuild(roles={201: team_role, assigned_role.id: assigned_role})
+        member = make_member(101, guild)
+        member.add_roles.side_effect = OSError("Discord unavailable")
+        records.add_to_lfg(101, "Python")
+
+        with self.assertRaises(OSError):
+            await teams.perform_team_join(member, team_id, guild)
+
+        self.assertIsNone(records.get_user_team_id(101))
+        self.assertTrue(records.is_looking(101))
+        member.add_roles.assert_awaited_once_with(
+            team_role, assigned_role, atomic=False
+        )
+
+    async def test_failed_team_role_removal_restores_membership(self):
+        self.add_verified(101)
+        team_id = records.create_team("Team", False, 201, 202, 203, 204)
+        records.join_team(101, team_id)
+        team_role = FakeRole(201)
+        assigned_role = FakeRole(config.discord_team_assigned_role_id)
+        guild = FakeGuild(roles={201: team_role, assigned_role.id: assigned_role})
+        member = make_member(101, guild)
+        member.remove_roles.side_effect = OSError("Discord unavailable")
+
+        with self.assertRaises(OSError):
+            await teams.perform_team_leave(member, team_id, guild)
+
+        self.assertEqual(records.get_user_team_id(101), team_id)
+        member.remove_roles.assert_awaited_once_with(
+            team_role, assigned_role, atomic=False
+        )
 
     async def test_team_deletion_removes_present_resources(self):
         self.add_verified(101)

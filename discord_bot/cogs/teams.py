@@ -133,7 +133,6 @@ async def perform_team_join(
     team_data = records.get_team(team_id)
     # DB Update
     records.join_team(member.id, team_id)
-    records.remove_from_lfg(member.id)
 
     team_data = records.get_team(team_id)
 
@@ -155,11 +154,16 @@ async def perform_team_join(
             "role_ids": [role.id for role in roles_to_add],
             "target_id": member.id,
         }
-        await member.add_roles(*roles_to_add)
+        try:
+            await member.add_roles(*roles_to_add, atomic=False)
+        except Exception:
+            records.leave_team(member.id)
+            raise
         logger.info(
             "discord_role_mutation_completed operation='team_join' details=%r",
             role_fields,
         )
+    records.remove_from_lfg(member.id)
     logger.info(
         "team_member_join_completed team_id=%r team_name=%r target_id=%r",
         team_id,
@@ -195,7 +199,11 @@ async def perform_team_leave(
             "role_ids": [role.id for role in roles_to_remove],
             "target_id": member.id,
         }
-        await member.remove_roles(*roles_to_remove)
+        try:
+            await member.remove_roles(*roles_to_remove, atomic=False)
+        except Exception:
+            records.join_team(member.id, team_id)
+            raise
         logger.info(
             "discord_role_mutation_completed operation='team_leave' details=%r",
             role_fields,
