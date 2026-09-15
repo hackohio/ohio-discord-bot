@@ -215,6 +215,45 @@ class RecordsTestCase(DatabaseTestCase):
         records.remove_registration("person@example.com")
         self.assertFalse(records.is_looking(101))
 
+    def test_team_grace_period_persists_and_clears(self):
+        team_id = records.create_team("Team", False, 201, 202, 203)
+
+        records.set_grace_period(team_id, 400.0)
+        self.assertEqual(records.get_team(team_id)["grace_period"], 400.0)
+        self.assertEqual(
+            records.get_all_grace_periods(),
+            [{"id": team_id, "name": "Team", "grace_period": 400.0}],
+        )
+
+        records.clear_grace_period(team_id)
+        self.assertEqual(records.get_all_grace_periods(), [])
+
+    def test_legacy_teams_table_gets_grace_period_column(self):
+        legacy_database = self._database_directory.name + "/legacy-teams.db"
+        records._DATABASE_FILE = legacy_database
+        with sqlite3.connect(records._DATABASE_FILE) as connection:
+            connection.execute(
+                """
+                CREATE TABLE teams (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    is_capstone BOOLEAN DEFAULT 0,
+                    team_lead INTEGER,
+                    role_id INTEGER NOT NULL,
+                    category_id INTEGER NOT NULL,
+                    text_id INTEGER NOT NULL,
+                    voice_id INTEGER
+                )
+                """
+            )
+
+        records._initialize_db()
+        with records._get_connection() as connection:
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(teams)")
+            }
+        self.assertIn("grace_period", columns)
+
     def test_legacy_codes_table_gets_expiration_column(self):
         legacy_database = self._database_directory.name + "/legacy.db"
         records._DATABASE_FILE = legacy_database

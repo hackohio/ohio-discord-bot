@@ -50,6 +50,7 @@ def make_member(member_id, guild=None, name=None):
         roles=[],
         add_roles=AsyncMock(),
         remove_roles=AsyncMock(),
+        send=AsyncMock(),
     )
 
 
@@ -94,6 +95,43 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         interaction.response.defer.assert_awaited_once_with(ephemeral=True)
         interaction.edit_original_response.assert_awaited_once()
         interaction.followup.send.assert_not_awaited()
+
+    def make_team(self, member_ids, *, lead=None, grace_period=None):
+        members = {member_id: make_member(member_id) for member_id in member_ids}
+        for member_id in member_ids:
+            self.add_verified(member_id)
+        team_id = records.create_team("Team", False, 201, 202, 203, 204)
+        for member_id in member_ids:
+            records.join_team(member_id, team_id)
+        if member_ids:
+            records.set_team_lead(team_id, lead if lead is not None else member_ids[0])
+        if grace_period is not None:
+            records.set_grace_period(team_id, grace_period)
+
+        team_role = FakeResource(201)
+        team_role.name = "Team"
+        text_channel = FakeResource(203)
+        text_channel.send = AsyncMock()
+        voice_channel = FakeResource(204)
+        category_channel = FakeResource(202)
+        guild = FakeGuild(
+            roles={
+                201: team_role,
+                config.discord_team_assigned_role_id: FakeRole(
+                    config.discord_team_assigned_role_id
+                ),
+            },
+            channels={202: category_channel, 203: text_channel, 204: voice_channel},
+            members=members,
+        )
+        for member in members.values():
+            member.guild = guild
+        return team_id, guild, members, text_channel
+
+    async def run_grace_period_cleanup(self, guild):
+        bot = SimpleNamespace(get_guild=lambda guild_id: guild)
+        cog = teams.TeamsCog(bot)
+        await cog.cleanup_team_grace_periods.coro(cog)
 
     def test_can_join_team_validation_codes(self):
         unverified = make_member(999)
@@ -458,6 +496,145 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         for resource in (*resources.values(), *roles.values()):
             resource.delete.assert_awaited_once()
         member.remove_roles.assert_awaited_once()
+
+    async def test_lead_leaving_two_person_team_deletes_it_immediately(self):
+        team_id, guild, members, _ = self.make_team([101, 102], lead=101)
+        interaction = make_interaction(members[101], guild)
+
+        await teams.TeamsCog.leave_team.callback(
+            teams.TeamsCog(SimpleNamespace()), interaction
+        )
+
+        self.assertFalse(records.team_exists(team_id))
+        members[102].send.assert_awaited_once()
+        self.assertIn(
+            "team was deleted",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+
+    async def test_non_lead_leaving_two_person_team_starts_grace_period(self):
+        team_id, guild, members, text_channel = self.make_team([101, 102], lead=101)
+        interaction = make_interaction(members[102], guild)
+
+        with patch("discord_bot.cogs.teams.time.time", return_value=100.0):
+            await teams.TeamsCog.leave_team.callback(
+                teams.TeamsCog(SimpleNamespace()), interaction
+            )
+
+        self.assertTrue(records.team_exists(team_id))
+        self.assertEqual(records.get_team_size(team_id), 1)
+        self.assertEqual(records.get_team(team_id)["grace_period"], 400.0)
+        warning = text_channel.send.call_args_list[0].kwargs["content"]
+        self.assertIn("<t:400:F>", warning)
+        self.assertIn("Add another member before", warning)
+
+    async def test_lead_removing_other_member_starts_grace_period(self):
+        team_id, guild, members, text_channel = self.make_team([101, 102], lead=101)
+        interaction = make_interaction(members[101], guild)
+
+        with patch("discord_bot.cogs.teams.time.time", return_value=100.0):
+            await teams.TeamsCog.remove_member.callback(
+                teams.TeamsCog(SimpleNamespace()), interaction, members[102]
+            )
+
+        self.assertTrue(records.team_exists(team_id))
+        self.assertEqual(records.get_team(team_id)["grace_period"], 400.0)
+        self.assertTrue(
+            any(
+                call.kwargs.get("content", "").startswith(
+                    "Your team now has fewer than two members."
+                )
+                for call in text_channel.send.call_args_list
+            )
+        )
+
+    async def test_adding_second_member_cancels_pending_deletion(self):
+        team_id, guild, members, text_channel = self.make_team(
+            [101], lead=101, grace_period=123.0
+        )
+        self.add_verified(102)
+        members[102] = make_member(102, guild)
+        guild._members[102] = members[102]
+        interaction = make_interaction(members[101], guild)
+
+        await teams.TeamsCog.add_member.callback(
+            teams.TeamsCog(SimpleNamespace()), interaction, members[102]
+        )
+
+        self.assertIsNone(records.get_team(team_id)["grace_period"])
+        self.assertTrue(
+            any(
+                call.kwargs.get("content")
+                == "Your team has at least two members again. Pending deletion has been cancelled."
+                for call in text_channel.send.call_args_list
+            )
+        )
+
+    async def test_singleton_team_is_deleted_after_deadline(self):
+        team_id, guild, members, _ = self.make_team([101], lead=101, grace_period=99.0)
+
+        await self.run_grace_period_cleanup(guild)
+
+        self.assertFalse(records.team_exists(team_id))
+        members[101].send.assert_awaited_once()
+
+    async def test_recovered_team_is_not_deleted_by_cleanup(self):
+        team_id, guild, _, _ = self.make_team([101, 102], lead=101, grace_period=99.0)
+
+        await self.run_grace_period_cleanup(guild)
+
+        self.assertTrue(records.team_exists(team_id))
+        self.assertIsNone(records.get_team(team_id)["grace_period"])
+
+    async def test_empty_team_is_deleted_immediately(self):
+        team_id, guild, _, _ = self.make_team([])
+
+        deleted = await teams.enforce_team_size_policy(team_id, guild)
+
+        self.assertTrue(deleted)
+        self.assertFalse(records.team_exists(team_id))
+
+    async def test_lead_leaving_larger_team_transfers_leadership(self):
+        team_id, guild, members, _ = self.make_team([101, 102, 103], lead=101)
+        interaction = make_interaction(members[101], guild)
+
+        await teams.TeamsCog.leave_team.callback(
+            teams.TeamsCog(SimpleNamespace()), interaction
+        )
+
+        team = records.get_team(team_id)
+        self.assertTrue(records.team_exists(team_id))
+        self.assertEqual(records.get_team_size(team_id), 2)
+        self.assertIn(team["team_lead"], {102, 103})
+        self.assertIsNone(team["grace_period"])
+
+    async def test_failed_cleanup_remains_eligible_for_retry(self):
+        team_id, guild, _, _ = self.make_team([101], lead=101, grace_period=99.0)
+        deletion = AsyncMock(side_effect=OSError("Discord unavailable"))
+
+        with patch.object(teams, "handle_team_deletion", new=deletion):
+            await self.run_grace_period_cleanup(guild)
+
+        deletion.assert_awaited_once_with(team_id, guild)
+        self.assertTrue(records.team_exists(team_id))
+        self.assertEqual(len(records.get_all_grace_periods()), 1)
+
+    async def test_organizer_removal_stays_immediate(self):
+        from discord_bot.cogs import organizer
+
+        team_id, guild, members, _ = self.make_team([101, 102], lead=101)
+        interaction = make_interaction(members[101], guild)
+
+        await organizer.OrganizerCog.remove_team.callback(
+            organizer.OrganizerCog(SimpleNamespace()),
+            interaction,
+            guild.get_role(201),
+            "cleanup",
+        )
+
+        self.assertFalse(records.team_exists(team_id))
+        self.assertIsNone(records.get_user_team_id(101))
+        self.assertIsNone(records.get_user_team_id(102))
 
     async def test_team_channel_deletion_skips_missing_and_surfaces_failures(self):
         team_id = records.create_team("Team", False, 201, 202, 203, 204)

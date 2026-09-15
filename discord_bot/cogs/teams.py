@@ -2,12 +2,13 @@
 
 import logging
 import random
+import time
 import uuid
 from enum import IntEnum
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import config
 import records
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 MAX_TEAM_SIZE = 4
 CAPSTONE_TEAM_SIZE = 5
-TEAM_FORMATION_TIMEOUT = 120
+TEAM_GRACE_PERIOD = 5 * 60
 
 
 class TeamJoinStatus(IntEnum):
@@ -29,19 +30,7 @@ class TeamJoinStatus(IntEnum):
 
 
 async def handle_team_deletion(team_id: int, guild: discord.Guild):  # TESTED
-    """
-    Handles the timeout of team formation when team doesn't meet minimum size requirement
-
-    If team has fewer than two members when timeout, this function will:
-        1. remove team assigned role from all current members of team.
-        2. remove team association from members in database
-        3. delete team associated channels
-        4. sends message explaining timeout and team re-creation process
-
-    Args:
-        ctxt (discord.Interaction): The Context of the Interaction.
-        team_id (int): The unique ID of the team
-    """
+    """Unconditionally remove a team's roles, channels, and database row."""
     operation_id = uuid.uuid4().hex
     team_data = records.get_team(team_id)
     try:
@@ -219,9 +208,132 @@ async def perform_team_leave(
     )
 
 
+async def _notify_team_channel(team_id: int, guild: discord.Guild, content: str):
+    team_data = records.get_team(team_id)
+    channel = guild.get_channel(team_data["text_id"]) if team_data and guild else None
+    if not channel:
+        return
+    try:
+        await channel.send(content=content)
+    except Exception:
+        logger.exception("team_notification_failed team_id=%r", team_id)
+
+
+async def _notify_remaining_member(team_id: int, guild: discord.Guild):
+    members = records.get_team_members(team_id)
+    if not members or not guild:
+        return
+    member = guild.get_member(members[0]["discord_id"])
+    if not member:
+        return
+    try:
+        await member.send(
+            content=(
+                "Your team has been deleted because it no longer has at least "
+                "two members. You may create another team using `/create_team`."
+            )
+        )
+    except Exception:
+        logger.exception("team_deletion_dm_failed team_id=%r", team_id)
+
+
+async def enforce_team_size_policy(
+    team_id: int,
+    guild: discord.Guild,
+    *,
+    departing_lead: bool = False,
+    previous_size: int | None = None,
+) -> bool:
+    """Apply the minimum-size rules after a membership change.
+
+    Returns whether the team was deleted.
+    """
+    team_data = records.get_team(team_id)
+    if not team_data:
+        return False
+
+    size = records.get_team_size(team_id)
+    if size == 0:
+        await handle_team_deletion(team_id, guild)
+        return True
+
+    if size >= 2:
+        if team_data.get("grace_period") is not None:
+            records.clear_grace_period(team_id)
+            await _notify_team_channel(
+                team_id,
+                guild,
+                "Your team has at least two members again. Pending deletion has been cancelled.",
+            )
+        return False
+
+    if departing_lead and previous_size == 2:
+        await _notify_remaining_member(team_id, guild)
+        await handle_team_deletion(team_id, guild)
+        return True
+
+    if team_data.get("grace_period") is None:
+        deadline = time.time() + TEAM_GRACE_PERIOD
+        records.set_grace_period(team_id, deadline)
+        await _notify_team_channel(
+            team_id,
+            guild,
+            (
+                "Your team now has fewer than two members. Add another member "
+                f"before <t:{int(deadline)}:F> or the team role and private "
+                "channels will be deleted. You may create another team afterward."
+            ),
+        )
+    return False
+
+
 class TeamsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def cog_load(self):
+        if not self.cleanup_team_grace_periods.is_running():
+            self.cleanup_team_grace_periods.start()
+
+    def cog_unload(self):
+        self.cleanup_team_grace_periods.cancel()
+
+    @tasks.loop(seconds=30)
+    async def cleanup_team_grace_periods(self):
+        guild = self.bot.get_guild(config.discord_guild_id)
+        if guild is None:
+            logger.warning(
+                "team_grace_period_cleanup_guild_unavailable guild_id=%r",
+                config.discord_guild_id,
+            )
+            return
+
+        now = time.time()
+        for pending in records.get_all_grace_periods():
+            if pending["grace_period"] > now:
+                continue
+            team_id = pending["id"]
+            try:
+                if not records.team_exists(team_id):
+                    continue
+                size = records.get_team_size(team_id)
+                if size >= 2:
+                    records.clear_grace_period(team_id)
+                    await _notify_team_channel(
+                        team_id,
+                        guild,
+                        "Your team has at least two members again. Pending deletion has been cancelled.",
+                    )
+                else:
+                    if size == 1:
+                        await _notify_remaining_member(team_id, guild)
+                    await handle_team_deletion(team_id, guild)
+            except Exception:
+                logger.exception("team_grace_period_cleanup_failed team_id=%r", team_id)
+
+    @cleanup_team_grace_periods.before_loop
+    async def before_cleanup_team_grace_periods(self):
+        await self.bot.wait_until_ready()
 
     @app_commands.guild_only()
     @app_commands.command(
@@ -616,42 +728,56 @@ class TeamsCog(commands.Cog):
 
         # ------------- Happy Case --------------------
 
-        # Grab Team Relavent Info
+        # Grab team information before removing the member.
         team_id = records.get_user_team_id(user.id)
         team_data = records.get_team(team_id)
+        previous_size = records.get_team_size(team_id)
+        departing_lead = team_data["team_lead"] == user.id
         team_text_channel = interaction.guild.get_channel(team_data["text_id"])
         team_role = interaction.guild.get_role(team_data["role_id"])
 
-        # Remove user from team
         await perform_team_leave(user, team_id, interaction.guild)
-        await interaction.edit_original_response(
-            content=f"You have successfully been removed from the team {team_role.mention}",
+        deleted = await enforce_team_size_policy(
+            team_id,
+            interaction.guild,
+            departing_lead=departing_lead,
+            previous_size=previous_size,
         )
-
-        # Delete team if no one is left
-        if records.get_team_size(team_id) == 0:
-            await handle_team_deletion(team_id, interaction.guild)
+        role_mention = getattr(team_role, "mention", f"<@&{team_data['role_id']}>")
+        await interaction.edit_original_response(
+            content=(
+                f"You have successfully left the team {role_mention}. "
+                "The team was deleted because it no longer had enough members."
+                if deleted
+                else f"You have successfully been removed from the team {role_mention}"
+            ),
+        )
+        if deleted:
             return
 
-        # If they were team lead, replace team_lead
-        team_lead_id = team_data["team_lead"]
-        if team_lead_id == user.id:
-            # Chose a random other teammate to assign as lead
+        # If they were team lead, replace team_lead.
+        if departing_lead:
             new_lead_id = random.choice(records.get_team_members(team_id))["discord_id"]
             records.set_team_lead(team_id, new_lead_id)
-            await team_text_channel.send(
-                embed=create_embed(
-                    "👋 Teammate Left!",
-                    f"{user.mention} has left the team.\n{interaction.guild.get_member(new_lead_id).mention} has been randomly assigned as the new Team Lead.",
+            if team_text_channel:
+                try:
+                    await team_text_channel.send(
+                        embed=create_embed(
+                            "👋 Teammate Left!",
+                            f"{user.mention} has left the team.\n{interaction.guild.get_member(new_lead_id).mention} has been randomly assigned as the new Team Lead.",
+                        )
+                    )
+                except Exception:
+                    logger.exception("team_notification_failed team_id=%r", team_id)
+        elif team_text_channel:
+            try:
+                await team_text_channel.send(
+                    embed=create_embed(
+                        "👋 Teammate Left!", f"{user.mention} has left the team."
+                    )
                 )
-            )
-
-        else:
-            await team_text_channel.send(
-                embed=create_embed(
-                    "👋 Teammate Left!", f"{user.mention} has left the team."
-                )
-            )
+            except Exception:
+                logger.exception("team_notification_failed team_id=%r", team_id)
 
     @app_commands.guild_only()
     @app_commands.command(name="add_member", description="Add a member to your team")
@@ -750,8 +876,9 @@ class TeamsCog(commands.Cog):
 
         # ------------- Happy Case --------------------
 
-        # Add the member to the team
+        # Add the member to the team and cancel a pending deletion if applicable.
         await perform_team_join(added_user, team_id, interaction.guild)
+        await enforce_team_size_policy(team_id, interaction.guild)
 
         team_data = records.get_team(team_id)
         text_channel = interaction.guild.get_channel(team_data["text_id"])
@@ -841,29 +968,38 @@ class TeamsCog(commands.Cog):
 
         # ------------- Happy Case --------------------
 
-        # Remove member from team
+        previous_size = records.get_team_size(team_id)
         await perform_team_leave(member, team_id, interaction.guild)
+        await enforce_team_size_policy(
+            team_id,
+            interaction.guild,
+            previous_size=previous_size,
+        )
 
         team_data = records.get_team(team_id)
         text_channel = interaction.guild.get_channel(team_data["text_id"])
 
-        # Send confirmation message to team_user
         await interaction.edit_original_response(
             content=f"{member.mention} has been removed successfully."
         )
 
-        # Notify team in team text channel of new member
-        await text_channel.send(
-            embed=create_embed(
-                title="👋 Teammate Removed!",
-                description=f"{member.mention} has been removed from the team by {team_user.mention}",
-            )
-        )
+        if text_channel:
+            try:
+                await text_channel.send(
+                    embed=create_embed(
+                        title="👋 Teammate Removed!",
+                        description=f"{member.mention} has been removed from the team by {team_user.mention}",
+                    )
+                )
+            except Exception:
+                logger.exception("team_notification_failed team_id=%r", team_id)
 
-        # Notify removed member over dm
-        await member.send(
-            content=f"You have been removed from the team <{team_data['name']}>. \nYou can join a new team or create your own using `/create_team`"
-        )
+        try:
+            await member.send(
+                content=f"You have been removed from the team <{team_data['name']}>. \nYou can join a new team or create your own using `/create_team`"
+            )
+        except Exception:
+            logger.exception("team_removal_dm_failed team_id=%r", team_id)
 
     @app_commands.guild_only()
     @app_commands.command(
