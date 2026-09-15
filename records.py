@@ -61,9 +61,18 @@ def _initialize_db():
                 role_id INTEGER NOT NULL,
                 category_id INTEGER NOT NULL,
                 text_id INTEGER NOT NULL,
-                voice_id INTEGER
+                voice_id INTEGER,
+                grace_period REAL
             )
         """)
+        team_columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({_TEAM_TABLE_NAME})")
+        }
+        if "grace_period" not in team_columns:
+            conn.execute(
+                f"ALTER TABLE {_TEAM_TABLE_NAME} ADD COLUMN grace_period REAL"
+            )
 
         # 4. CODES TABLE (Temporary Storage)
         conn.execute(f"""
@@ -548,6 +557,39 @@ def get_team_members(identifier) -> list:
             raise ValueError("Identifier must be int (ID) or str (Name)")
 
         # Convert list of Row objects to list of dicts
+        return [dict(row) for row in rows]
+
+
+def set_grace_period(team_id: int, expires_at: float):
+    """Set when an undersized team's grace period expires."""
+    with _LOCK, _get_connection() as conn:
+        conn.execute(
+            f"UPDATE {_TEAM_TABLE_NAME} SET grace_period = ? WHERE id = ?",
+            (expires_at, team_id),
+        )
+        conn.commit()
+
+
+def clear_grace_period(team_id: int):
+    """Clear a team's pending grace period."""
+    with _LOCK, _get_connection() as conn:
+        conn.execute(
+            f"UPDATE {_TEAM_TABLE_NAME} SET grace_period = NULL WHERE id = ?",
+            (team_id,),
+        )
+        conn.commit()
+
+
+def get_all_grace_periods() -> list:
+    """Return teams with active grace periods."""
+    with _get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, name, grace_period
+            FROM {_TEAM_TABLE_NAME}
+            WHERE grace_period IS NOT NULL
+            """
+        ).fetchall()
         return [dict(row) for row in rows]
 
 
