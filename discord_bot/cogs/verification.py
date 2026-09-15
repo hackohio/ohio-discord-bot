@@ -1,5 +1,6 @@
 """Verification, email, and role synchronization commands."""
 
+import asyncio
 import logging
 import random
 import secrets
@@ -153,10 +154,14 @@ async def send_verification_email(recipient, CODE, username):  # TESTED
     msg["Subject"] = "Verify your Discord Account"
     msg["From"] = config.email_address
     msg["To"] = recipient
-    try:
+
+    def send():
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp_server:
             smtp_server.login(config.email_address, config.email_password)
             smtp_server.sendmail(config.email_address, recipient, msg.as_string())
+
+    try:
+        await asyncio.to_thread(send)
         logger.info(
             "verification_email_delivered email=%r username=%r outcome=%r",
             recipient,

@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+import threading
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -968,6 +969,43 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             interaction.edit_original_response.call_args.kwargs["content"],
         )
         self.assert_deferred_response(interaction)
+
+    async def test_verification_email_does_not_block_event_loop(self):
+        self.add_verified(101, email="person@example.com")
+        release_smtp = threading.Event()
+        order = []
+
+        class BlockingSMTP:
+            def __enter__(self):
+                order.append("smtp_started")
+                release_smtp.wait(0.2)
+                order.append("smtp_finished")
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def login(self, *args):
+                pass
+
+            def sendmail(self, *args):
+                pass
+
+        async def unrelated_work():
+            await asyncio.sleep(0)
+            order.append("unrelated_work")
+            release_smtp.set()
+
+        with patch.object(verification.smtplib, "SMTP_SSL", return_value=BlockingSMTP()):
+            sent, _ = await asyncio.gather(
+                verification.send_verification_email(
+                    "person@example.com", "123456", "person#0001"
+                ),
+                unrelated_work(),
+            )
+
+        self.assertTrue(sent)
+        self.assertLess(order.index("unrelated_work"), order.index("smtp_finished"))
 
     async def test_verification_email_failure_is_safe(self):
         self.add_verified(101, email="person@example.com")
