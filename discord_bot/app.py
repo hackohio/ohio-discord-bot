@@ -33,6 +33,17 @@ class OhioBot(commands.Bot):
         for extension in EXTENSIONS:
             await self.load_extension(extension)
 
+        guild = discord.Object(id=config.discord_guild_id)
+        self.tree.clear_commands(guild=guild)
+        self.tree.copy_global_to(guild=guild)
+        synced = await self.tree.sync(guild=guild)
+        logger.info(
+            "commands_synced scope=%r guild_id=%r count=%r",
+            "guild",
+            guild.id,
+            len(synced),
+        )
+
     async def _send_safe_error_response(self, interaction: discord.Interaction):
         """Attempt one generic ephemeral response without exposing exception data."""
         try:

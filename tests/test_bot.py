@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from tests.helpers import DatabaseTestMixin
 
-from discord_bot.app import OhioBot
+from discord_bot.app import EXTENSIONS, OhioBot
 from discord_bot.cogs import lfg, teams, verification
 
 import config
@@ -650,6 +650,27 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             await teams.delete_team_channels(team_id, guild)
         deleted_text.delete.assert_awaited_once()
         failing_voice.delete.assert_awaited_once()
+
+    async def test_setup_hook_syncs_loaded_commands_to_event_guild(self):
+        bot = OhioBot()
+        try:
+            load_extension = AsyncMock()
+            sync = AsyncMock(return_value=[])
+            with patch.object(bot, "load_extension", new=load_extension), patch.object(
+                bot.tree, "clear_commands"
+            ) as clear_commands, patch.object(
+                bot.tree, "copy_global_to"
+            ) as copy_global_to, patch.object(bot.tree, "sync", new=sync):
+                await bot.setup_hook()
+
+            self.assertEqual(load_extension.await_count, len(EXTENSIONS))
+            guild = clear_commands.call_args.kwargs["guild"]
+            clear_commands.assert_called_once_with(guild=guild)
+            copy_global_to.assert_called_once_with(guild=guild)
+            sync.assert_awaited_once_with(guild=guild)
+            self.assertEqual(guild.id, config.discord_guild_id)
+        finally:
+            await bot.close()
 
     async def test_safe_error_response_uses_initial_response_or_followup(self):
         bot = OhioBot()

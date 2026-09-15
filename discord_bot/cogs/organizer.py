@@ -307,6 +307,7 @@ class OrganizerCog(commands.Cog):
         await ctx.defer(ephemeral=True)
 
         if spec.lower() == "local":
+            self.bot.tree.clear_commands(guild=ctx.guild)
             self.bot.tree.copy_global_to(guild=ctx.guild)
             synced = await self.bot.tree.sync(guild=ctx.guild)
             logger.info(
