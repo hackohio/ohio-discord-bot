@@ -9,11 +9,12 @@ from discord.ext import commands
 
 import config
 import records
-from discord_bot.common import _log_rejection, audit_command, create_embed
 from discord_bot.cogs.teams import handle_team_deletion
-from discord_bot.cogs.verification import role_map, sync_user_roles
+from discord_bot.cogs.verification import sync_user_roles
+from discord_bot.common import _log_rejection, audit_command, create_embed
 
 logger = logging.getLogger(__name__)
+
 
 class OrganizerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -25,7 +26,17 @@ class OrganizerCog(commands.Cog):
         name="overify",
         description="Manually verify a Discord account for this event (Organizers only)",
     )
-    @app_commands.describe(role="User Role: 'participant', 'mentor', or 'judge'")
+    @app_commands.describe(
+        role="User role: mentor, judge, participant, or mentor/judge"
+    )
+    @app_commands.choices(
+        role=[
+            app_commands.Choice(name="mentor", value="mentor"),
+            app_commands.Choice(name="judge", value="judge"),
+            app_commands.Choice(name="participant", value="participant"),
+            app_commands.Choice(name="mentor/judge", value="mentor/judge"),
+        ]
+    )
     @audit_command
     async def overify(
         self,
@@ -52,30 +63,32 @@ class OrganizerCog(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
-        # Check if role is valid to be overified with
-        if role not in role_map:
+        allowed_roles = {"mentor", "judge", "participant", "mentor/judge"}
+        if role not in allowed_roles:
             _log_rejection(interaction, "invalid_role", requested_role=role)
             await interaction.edit_original_response(
-                content=f"`<{role}>` is not a valid role. \nPlease chose either `participant`, `mentor`, or `judge`",
+                content=f"`<{role}>` is not a valid role. Choose mentor, judge, participant, or mentor/judge.",
             )
             return
+
+        roles_to_add = ["mentor", "judge"] if role == "mentor/judge" else [role]
 
         # Case 1: User is already verified (Add Role)
         if records.is_verified(member_to_promote.id):
             verified_email = records.get_verified_email(member_to_promote.id)
 
-            # Check if user has role specified, else add it
-            if role in records.get_user_roles(verified_email):
+            roles = records.get_user_roles(verified_email)
+            new_roles = [
+                role_name for role_name in roles_to_add if role_name not in roles
+            ]
+            if not new_roles:
                 await interaction.edit_original_response(
                     content=f"`<{member_to_promote.name}>` is verified and already has the role `<{role}>`.",
                 )
                 return
 
-            # Update user in database
-            roles = records.get_user_roles(verified_email)
-            if role not in roles:
-                roles.append(role)
-                records.update_roles(verified_email, roles)
+            roles.extend(new_roles)
+            records.update_roles(verified_email, roles)
 
             await interaction.edit_original_response(
                 content=f"`<{member_to_promote.name}>` is already verified but has been given the role `<{role}>`.",
@@ -84,7 +97,7 @@ class OrganizerCog(commands.Cog):
         # Case 2: User is not Verified (Register and Verify User with the appropriate roles)
         else:
             records.add_registration(
-                email_address, first_name, last_name, is_capstone, [role]
+                email_address, first_name, last_name, is_capstone, roles_to_add
             )
             records.add_verified_user(
                 email_address, member_to_promote.id, member_to_promote.name
@@ -98,11 +111,15 @@ class OrganizerCog(commands.Cog):
 
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
-    @app_commands.command(name="remove_team", description="Remove Team (Organizers only)")
+    @app_commands.command(
+        name="remove_team", description="Remove Team (Organizers only)"
+    )
     @audit_command
     async def remove_team(
         self,
-        interaction: discord.Interaction, team_role: discord.Role, reason_for_removal: str
+        interaction: discord.Interaction,
+        team_role: discord.Role,
+        reason_for_removal: str,
     ):  # TESTED
         """
         Delete a team and its associated data from the event.
@@ -154,7 +171,8 @@ class OrganizerCog(commands.Cog):
     @audit_command
     async def find_channel(
         self,
-        interaction: discord.Interaction, target: Union[discord.Role, discord.Member]
+        interaction: discord.Interaction,
+        target: Union[discord.Role, discord.Member],
     ):
 
         await interaction.response.defer(ephemeral=True)
@@ -304,7 +322,9 @@ class OrganizerCog(commands.Cog):
 
         if spec.lower() == "global":
             synced = await self.bot.tree.sync()
-            logger.info("command_sync_completed scope=%r count=%r", "global", len(synced))
+            logger.info(
+                "command_sync_completed scope=%r count=%r", "global", len(synced)
+            )
             await ctx.send(
                 f"🌎 **Global Sync:** Synced {len(synced)} commands globally. (Updates may take up to 1 hour).",
             )
@@ -334,4 +354,3 @@ class OrganizerCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(OrganizerCog(bot))
-
