@@ -155,6 +155,9 @@ web_api_key = _get_web_api_key()
 email_address = config_data["email"]["address"]
 email_password = config_data["email"]["password"]
 email_code_expiration_time = _get_int("email", "code_expiration_time")
+discord_ready_file = os.environ.get(
+    "OHIO_DISCORD_READY_FILE", "/tmp/ohio-discord-bot.ready"
+)
 cleanup_channel_ids = _get_int_set("cleanup", "channel_ids")
 cleanup_protected_user_ids = _get_int_set("cleanup", "protected_user_ids")
 

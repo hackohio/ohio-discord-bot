@@ -186,11 +186,15 @@
     - name: Apply pending restarts
       ansible.builtin.meta: flush_handlers
 
-    - name: Wait for the webhook to start listening
-      ansible.builtin.wait_for:
-        host: 127.0.0.1
-        port: "{{ web_port }}"
-        timeout: 120
+    - name: Wait for Discord readiness
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ web_port }}/health"
+        status_code: [200, 503]
+        return_content: true
+      register: bot_readiness
+      until: bot_readiness.status == 200 and bot_readiness.json.status == "ready"
+      retries: 24
+      delay: 5
 
     - name: Confirm the service is still running
       ansible.builtin.command: systemctl is-active ohio-bot

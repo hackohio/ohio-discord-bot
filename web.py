@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 import secrets
 import time
 import uuid
@@ -73,7 +74,9 @@ def finish_request(response):
 # Setup a method to listen at "/post/user" for a post request
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok"})
+    if Path(config.discord_ready_file).is_file():
+        return jsonify({"status": "ready"})
+    return jsonify({"status": "starting"}), 503
 
 
 @app.route("/post/user", methods=["POST"])

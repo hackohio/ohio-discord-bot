@@ -143,8 +143,8 @@ its `CONFIG_INI` secret and run **Start bot** for that event again.
 1. Go to **Actions → Start bot → Run workflow**.
 2. Select the event's GitHub environment.
 3. Leave `ref` as `main`, unless you want a different branch.
-4. Leave **Restore** unticked for a new event. Tick it only to bring back that
-   event's data from its last **Stop**, for example after restarting mid-event.
+4. Leave **Restore** unticked for a new event. Tick it only to use an existing
+   S3 backup for that event.
 5. Wait about 5 minutes. The run's **Summary** page shows the server IP and **webhook URL**.
 6. Put the webhook URL into that event's registration/intake system. **It changes whenever its server is recreated.**
 
@@ -156,18 +156,18 @@ curl -i -X POST https://<SERVER_IP>/post/user -H "api-key: wrong" -H "Content-Ty
 
 For outage and certificate alerts, configure an external monitor to request
 `https://<SERVER_IP>/health` every five minutes and alert unless it receives
-HTTP `200` with `{"status":"ok"}`. Update the monitor whenever the workflow
-reports a new server IP.
+HTTP `200` with `{"status":"ready"}`. The endpoint returns HTTP `503` until
+Discord login and command synchronization complete. Update the monitor whenever
+the workflow reports a new server IP.
 
 ### Stop
 
 1. Go to **Actions → Stop bot → Run workflow**.
 2. Select the event's GitHub environment.
-3. Leave **backup** ticked unless you're sure you don't need that event's data.
-4. When the run finishes, open the **Lightsail console** and confirm that event's instance is gone.
+3. When the run finishes, open the **Lightsail console** and confirm that event's instance is stopped.
 
-If the backup step fails (for example, the server is broken), the server is **not** deleted,
-so nothing is lost. Fix the problem, or re-run with backup unticked if you don't need the data.
+The instance and its database are preserved. Lightsail can continue charging for
+stopped instances; delete one manually only when its data is no longer needed.
 
 ### Deploying a code change mid-event
 
@@ -196,7 +196,7 @@ To restart it: `sudo systemctl restart ohio-bot`.
 
 **I'm not sure if something is still running and costing money.** Check the
 Lightsail console. Instances are named `ohio-discord-bot-<event>`. **Stop bot** only
-checks and removes the event name entered in that workflow run.
+stops the event name entered in that workflow run.
 
 ---
 
@@ -205,9 +205,8 @@ checks and removes the event name entered in that workflow run.
 - HTTPS uses a short-lived Let's Encrypt certificate for the server's public IP.
   Caddy renews it automatically; if webhook TLS fails, inspect
   `sudo journalctl -u caddy -n 100 --no-pager`.
-- `start.py` runs the bot and the webhook as two child processes. If only one of
-  them crashes, the service stays "running" and systemd won't restart it. Check
-  the logs if the bot goes quiet but the webhook still responds.
+- `start.py` runs the bot and webhook as two child processes. If either exits,
+  the launcher stops the sibling and exits so systemd restarts the service.
 - Backups in the S3 bucket contain participant names and emails. Delete old ones
   once they're no longer needed.
 - The GitHub deploy user has long-lived access keys. GitHub OIDC could replace

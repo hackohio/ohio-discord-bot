@@ -1,6 +1,7 @@
 """Application and lifecycle for the OHI/O Discord bot."""
 
 import logging
+from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -11,6 +12,14 @@ from discord_bot.common import _log_rejection
 from logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
+
+def _set_readiness(ready: bool):
+    path = Path(config.discord_ready_file)
+    if ready:
+        path.touch()
+    else:
+        path.unlink(missing_ok=True)
+
 
 EXTENSIONS = (
     "discord_bot.cogs.cleanup",
@@ -102,6 +111,15 @@ class OhioBot(commands.Bot):
 
     async def on_ready(self):
         user = self.user
+        if self.get_guild(config.discord_guild_id) is None:
+            _set_readiness(False)
+            logger.error(
+                "bot_ready_guild_missing bot_id=%r guild_id=%r",
+                user.id if user else None,
+                config.discord_guild_id,
+            )
+            return
+        _set_readiness(True)
         logger.info(
             "bot_ready bot_id=%r bot_username=%r guild_id=%r",
             user.id if user else None,
@@ -109,8 +127,21 @@ class OhioBot(commands.Bot):
             config.discord_guild_id,
         )
 
+    async def on_disconnect(self):
+        _set_readiness(False)
+        logger.warning("bot_disconnected guild_id=%r", config.discord_guild_id)
+
+    async def on_resumed(self):
+        if self.get_guild(config.discord_guild_id) is not None:
+            _set_readiness(True)
+            logger.info("bot_resumed guild_id=%r", config.discord_guild_id)
+
 
 def run_bot():
     configure_logging("bot")
+    _set_readiness(False)
     logger.info("bot_starting guild_id=%r", config.discord_guild_id)
-    OhioBot().run(config.discord_token, log_handler=None)
+    try:
+        OhioBot().run(config.discord_token, log_handler=None)
+    finally:
+        _set_readiness(False)

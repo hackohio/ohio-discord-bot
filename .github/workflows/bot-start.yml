@@ -1,6 +1,6 @@
 name: Start bot
 
-# Creates the Lightsail server and starts the bot on it.
+# Creates or starts the Lightsail server and starts the bot on it.
 # Run from the Actions tab: "Start bot" -> "Run workflow".
 
 on:
@@ -94,14 +94,34 @@ jobs:
         working-directory: infra/terraform
         run: terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="region=${AWS_REGION}" -backend-config="key=ohio-discord-bot/${EVENT}/terraform.tfstate"
 
-      - name: Create server (terraform apply)
+      - name: Create or start server
         working-directory: infra/terraform
         env:
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
         run: |
           terraform apply -auto-approve
-          echo "BOT_IP=$(terraform output -raw public_ip)" >> "$GITHUB_ENV"
-          echo "WEBHOOK_URL=$(terraform output -raw webhook_url)" >> "$GITHUB_ENV"
+          instance_name="$TF_VAR_instance_name"
+          state="$(aws lightsail get-instance-state --instance-name "$instance_name" --query 'state.name' --output text)"
+          if [ "$state" = "stopped" ]; then
+            aws lightsail start-instance --instance-name "$instance_name"
+          elif [ "$state" != "running" ]; then
+            echo "::error::Cannot safely start server from state: $state"
+            exit 1
+          fi
+
+          for attempt in {1..30}; do
+            state="$(aws lightsail get-instance-state --instance-name "$instance_name" --query 'state.name' --output text)"
+            [ "$state" = "running" ] && break
+            sleep 10
+          done
+          if [ "$state" != "running" ]; then
+            echo "::error::Server did not start within five minutes."
+            exit 1
+          fi
+
+          ip="$(aws lightsail get-instance --instance-name "$instance_name" --query 'instance.publicIpAddress' --output text)"
+          echo "BOT_IP=${ip}" >> "$GITHUB_ENV"
+          echo "WEBHOOK_URL=https://${ip}/post/user" >> "$GITHUB_ENV"
 
       - name: Download database backup
         if: inputs.restore_db
@@ -131,20 +151,34 @@ jobs:
             -e "public_ip=${BOT_IP}" \
             -e "restore_db_file=${RESTORE_DB_FILE:-}"
 
-      - name: Verify the HTTPS webhook
+      - name: Verify sustained bot readiness
         run: |
-          for attempt in {1..24}; do
+          consecutive=0
+          for attempt in {1..36}; do
             status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
-              --max-time 10 -X POST "$WEBHOOK_URL" \
-              -H 'api-key: wrong' -H 'Content-Type: application/json' -d '{}' || true)"
-            if [ "$status" = 401 ]; then
-              exit 0
+              --max-time 10 "https://${BOT_IP}/health" || true)"
+            if [ "$status" = 200 ]; then
+              consecutive=$((consecutive + 1))
+              echo "Readiness check ${consecutive}/6 passed."
+              [ "$consecutive" = 6 ] && break
+            else
+              consecutive=0
+              echo "Readiness returned ${status:-no response}; retrying..."
             fi
-            echo "Webhook returned ${status:-no response}; retrying..."
             sleep 5
           done
-          echo "::error::HTTPS webhook did not return 401."
-          exit 1
+          if [ "$consecutive" != 6 ]; then
+            echo "::error::Bot did not remain ready for six consecutive checks."
+            exit 1
+          fi
+
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --max-time 10 -X POST "$WEBHOOK_URL" \
+            -H 'api-key: wrong' -H 'Content-Type: application/json' -d '{}' || true)"
+          if [ "$status" != 401 ]; then
+            echo "::error::HTTPS webhook did not return 401."
+            exit 1
+          fi
 
       - name: Summary
         env:
@@ -161,14 +195,14 @@ jobs:
 
           Update the registration system to send to the webhook URL above (it changes every deploy).
 
-          **The server costs money while it exists. Run the "Stop bot" workflow when the event is over.**
+          Run the **Stop bot** workflow to shut down the server while preserving its data.
           EOF
 
       - name: Warn about a half-created server
         if: failure()
         run: |
           echo "## Start failed" >> "$GITHUB_STEP_SUMMARY"
-          echo "A server for \`${EVENT}\` may already have been created (and is being billed). Fix the error above and re-run **Start bot**, or run **Stop bot** for \`${EVENT}\` to delete it." >> "$GITHUB_STEP_SUMMARY"
+          echo "A server for \`${EVENT}\` may already have been created. Fix the error above and re-run **Start bot**, or run **Stop bot** for \`${EVENT}\` to stop it without deleting its data." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove secrets from runner
         if: always()

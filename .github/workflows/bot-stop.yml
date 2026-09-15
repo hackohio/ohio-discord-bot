@@ -1,7 +1,7 @@
 name: Stop bot
 
-# Backs up records.db to S3 (optional) and deletes the Lightsail server so it
-# stops costing money. Run from the Actions tab: "Stop bot" -> "Run workflow".
+# Stops the Lightsail server without deleting the instance or its data.
+# Run from the Actions tab: "Stop bot" -> "Run workflow".
 
 on:
   workflow_dispatch:
@@ -10,10 +10,6 @@ on:
         description: GitHub environment deployed by Start bot
         type: environment
         required: true
-      backup_db:
-        description: Save records.db to S3 before deleting the server (recommended)
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -25,20 +21,16 @@ concurrency:
 env:
   AWS_REGION: us-east-2
   EVENT: ${{ inputs.event }}
-  TF_IN_AUTOMATION: "true"
-  TF_INPUT: "false"
-  TF_VAR_instance_name: ohio-discord-bot-${{ inputs.event }}
+  INSTANCE_NAME: ohio-discord-bot-${{ inputs.event }}
 
 jobs:
   stop:
-    name: Back up and delete server
+    name: Stop server
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    environment: ${{ inputs.event }}
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
       - name: Validate event name
         run: |
           if [[ ! "$EVENT" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
@@ -53,73 +45,34 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Look up bucket names
+      - name: Stop server
         run: |
-          account_id="$(aws sts get-caller-identity --query Account --output text)"
-          echo "TF_STATE_BUCKET=ohio-discord-bot-tfstate-${account_id}" >> "$GITHUB_ENV"
-          echo "BACKUP_BUCKET=ohio-discord-bot-backups-${account_id}" >> "$GITHUB_ENV"
+          state="$(aws lightsail get-instance-state --instance-name "$INSTANCE_NAME" --query 'state.name' --output text)"
+          case "$state" in
+            stopped)
+              echo "Server is already stopped."
+              exit 0
+              ;;
+            stopping)
+              ;;
+            running)
+              aws lightsail stop-instance --instance-name "$INSTANCE_NAME"
+              ;;
+            *)
+              echo "::error::Cannot safely stop server from state: $state"
+              exit 1
+              ;;
+          esac
 
-      - name: Install SSH key
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_bot
-          chmod 600 ~/.ssh/id_bot
-
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v4
-        with:
-          terraform_version: "<2.0.0"
-          terraform_wrapper: false
-
-      - name: Terraform init
-        working-directory: infra/terraform
-        run: terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="region=${AWS_REGION}" -backend-config="key=ohio-discord-bot/${EVENT}/terraform.tfstate"
-
-      - name: Find the running server
-        working-directory: infra/terraform
-        run: |
-          ip="$(terraform output -raw public_ip 2> /dev/null || true)"
-          echo "BOT_IP=${ip}" >> "$GITHUB_ENV"
-          if [ -z "$ip" ]; then
-            echo "::notice::No server found in Terraform state. Nothing to back up."
-          fi
-
-      # If this step fails, the job stops here and the server is NOT deleted, so
-      # no data is lost. If the server is broken and you don't need the data,
-      # re-run with the backup checkbox unticked.
-      - name: Back up records.db to S3
-        if: inputs.backup_db && env.BOT_IP != ''
-        run: |
-          ssh_opts=(-i ~/.ssh/id_bot -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20)
-          db=/opt/ohio-discord-bot/records.db
-
-          # Stop the bot first so the database isn't being written mid-copy.
-          ssh "${ssh_opts[@]}" "ubuntu@${BOT_IP}" 'sudo systemctl stop ohio-bot || true'
-
-          if ! ssh "${ssh_opts[@]}" "ubuntu@${BOT_IP}" "sudo test -f ${db}"; then
-            echo "::warning::No records.db on the server. Nothing to back up."
-            exit 0
-          fi
-
-          ssh "${ssh_opts[@]}" "ubuntu@${BOT_IP}" "sudo cat ${db}" > "$RUNNER_TEMP/records.db"
-          ts="$(date -u +%Y%m%dT%H%M%SZ)"
-          aws s3 cp "$RUNNER_TEMP/records.db" "s3://${BACKUP_BUCKET}/${EVENT}/records-${ts}.db"
-          aws s3 cp "$RUNNER_TEMP/records.db" "s3://${BACKUP_BUCKET}/${EVENT}/latest.db"
-          echo "Database backed up to \`s3://${BACKUP_BUCKET}/${EVENT}/records-${ts}.db\` (also saved as \`${EVENT}/latest.db\`)." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Delete server (terraform destroy)
-        working-directory: infra/terraform
-        env:
-          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-        run: terraform destroy -auto-approve
+          for attempt in {1..30}; do
+            state="$(aws lightsail get-instance-state --instance-name "$INSTANCE_NAME" --query 'state.name' --output text)"
+            [ "$state" = "stopped" ] && exit 0
+            sleep 10
+          done
+          echo "::error::Server did not stop within five minutes."
+          exit 1
 
       - name: Summary
         run: |
           echo "## Bot stopped" >> "$GITHUB_STEP_SUMMARY"
-          echo "The Lightsail server for \`${EVENT}\` has been deleted. Run **Start bot** next time you need it." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Remove secrets from runner
-        if: always()
-        run: rm -f ~/.ssh/id_bot "$RUNNER_TEMP/records.db"
+          echo "The Lightsail server for \`${EVENT}\` has been stopped. The instance and its data were preserved." >> "$GITHUB_STEP_SUMMARY"

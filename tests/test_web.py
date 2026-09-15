@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import patch
 
 from tests.helpers import DatabaseTestCase
@@ -18,10 +19,17 @@ class WebhookTestCase(DatabaseTestCase):
             "/post/user", json=payload, headers=self.headers, **kwargs
         )
 
-    def test_health_endpoint_requires_no_authentication(self):
-        response = self.client.get("/health")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json, {"status": "ok"})
+    def test_health_endpoint_requires_discord_readiness(self):
+        ready_file = Path(self._database_directory.name) / "discord-ready"
+        with patch.object(web.config, "discord_ready_file", str(ready_file)):
+            response = self.client.get("/health")
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.json, {"status": "starting"})
+
+            ready_file.touch()
+            response = self.client.get("/health")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json, {"status": "ready"})
 
     def test_invalid_api_key_returns_401(self):
         response = self.client.post(

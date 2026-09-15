@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 import threading
 import unittest
@@ -939,6 +940,29 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             copy_global_to.assert_called_once_with(guild=guild)
             sync.assert_awaited_once_with(guild=guild)
             self.assertEqual(guild.id, config.discord_guild_id)
+        finally:
+            await bot.close()
+
+    async def test_bot_readiness_requires_configured_guild_and_clears_on_disconnect(self):
+        bot = OhioBot()
+        ready_file = Path(self._database_directory.name) / "discord-ready"
+        bot._connection.user = SimpleNamespace(id=123, name="bot")
+        try:
+            with patch.object(config, "discord_ready_file", str(ready_file), create=True):
+                with patch.object(bot, "get_guild", return_value=None):
+                    await bot.on_ready()
+                self.assertFalse(ready_file.exists())
+
+                with patch.object(bot, "get_guild", return_value=SimpleNamespace()):
+                    await bot.on_ready()
+                self.assertTrue(ready_file.exists())
+
+                await bot.on_disconnect()
+                self.assertFalse(ready_file.exists())
+
+                with patch.object(bot, "get_guild", return_value=SimpleNamespace()):
+                    await bot.on_resumed()
+                self.assertTrue(ready_file.exists())
         finally:
             await bot.close()
 

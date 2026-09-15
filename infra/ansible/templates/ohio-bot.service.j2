@@ -7,9 +7,12 @@ Wants=network-online.target
 User={{ app_user }}
 Group={{ app_user }}
 WorkingDirectory={{ app_dir }}
+RuntimeDirectory=ohio-bot
 Environment=HOME={{ app_home }}
+Environment=OHIO_DISCORD_READY_FILE=/run/ohio-bot/discord.ready
+ExecStartPre=/usr/bin/rm -f /run/ohio-bot/discord.ready
 ExecStart=/usr/local/bin/uv run --frozen python start.py
-Restart=always
+Restart=on-failure
 RestartSec=5
 
 [Install]
