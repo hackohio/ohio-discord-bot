@@ -5,7 +5,9 @@ import logging
 import random
 import secrets
 import smtplib
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 
 import discord
 from discord import app_commands
@@ -141,19 +143,74 @@ async def send_verification_email(recipient, CODE, username):  # TESTED
         Exception: If there is an error with sending email, prints error message.
 
     """
-    body = f"""Dear {records.get_first_name(recipient)},<br>
-        To verify that your email is associated with the discord account: {username}, please enter the code below:<br><br>
-        <h3>{CODE}</h3><br>
-        If you didn’t attempt to verify your account, you can safely ignore this email.<br><br>
-        This code will expire in {round(config.email_code_expiration_time / 60)} minutes. If it has expired, please request a new verification email.<br><br>
-        Thank you,<br>
-        OHI/O Hackathon Team<br><br>
-        If you have any issues or questions, please contact us at {config.contact_organizer_email} or message in the Ask an Organizer channel on discord
-        """
-    msg = MIMEText(body, "html")
-    msg["Subject"] = "Verify your Discord Account"
+    first_name = records.get_first_name(recipient) or "there"
+    expiration_minutes = round(config.email_code_expiration_time / 60)
+    plain_body = f"""Hi {first_name},
+
+Use this code to verify the Discord account {username}:
+
+{CODE}
+
+This code expires in {expiration_minutes} minutes.
+If you did not request this, you can safely ignore this email.
+
+OHI/O Hackathon Team
+Questions? Contact {config.contact_organizer_email}
+"""
+    html_body = f"""<!doctype html>
+<html lang="en">
+  <body style="margin:0;background-color:#f4f4f4;color:#242629;font-family:Arial,Helvetica,sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#f4f4f4;padding:32px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,0.08);">
+            <tr>
+              <td style="background-color:#ba0c2f;padding:24px 32px;color:#ffffff;">
+                <div style="font-size:14px;font-weight:bold;letter-spacing:1.5px;">OHI/O HACKATHONS</div>
+                <h1 style="margin:8px 0 0;font-size:26px;line-height:1.25;">Verify your Discord account</h1>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:32px;">
+                <p style="margin:0 0 16px;font-size:16px;line-height:1.6;">Hi {escape(str(first_name))},</p>
+                <p style="margin:0 0 24px;font-size:16px;line-height:1.6;">
+                  Enter this code in Discord to connect your registration to
+                  <strong>{escape(str(username))}</strong>.
+                </p>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                  <tr>
+                    <td align="center" style="background-color:#f8e8ec;border:1px solid #e7a8b7;border-radius:8px;padding:20px;font-size:32px;font-weight:bold;letter-spacing:8px;color:#7a001d;">
+                      {escape(str(CODE))}
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:24px 0 8px;font-size:14px;line-height:1.6;color:#555555;">
+                  This code expires in <strong>{expiration_minutes} minutes</strong>.
+                </p>
+                <p style="margin:0;font-size:14px;line-height:1.6;color:#555555;">
+                  If you did not request this, you can safely ignore this email.
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td style="background-color:#f7f7f7;padding:20px 32px;font-size:12px;line-height:1.5;color:#666666;">
+                OHI/O Hackathon Team<br>
+                Questions? Contact {escape(config.contact_organizer_email)} or message Ask an Organizer in Discord.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Your OHI/O Discord verification code"
     msg["From"] = config.email_address
     msg["To"] = recipient
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     def send():
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp_server:

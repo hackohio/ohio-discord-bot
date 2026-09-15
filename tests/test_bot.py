@@ -1,4 +1,5 @@
 import asyncio
+from email import message_from_string
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -1115,6 +1116,43 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             interaction.edit_original_response.call_args.kwargs["content"],
         )
         self.assert_deferred_response(interaction)
+
+    async def test_verification_email_has_branded_html_and_plain_text(self):
+        records.add_registration(
+            "person@example.com", "Pat", "Person", False, ["participant"]
+        )
+        sent = {}
+
+        class CapturingSMTP:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def login(self, *args):
+                pass
+
+            def sendmail(self, sender, recipient, message):
+                sent["message"] = message
+
+        with patch.object(
+            verification.smtplib, "SMTP_SSL", return_value=CapturingSMTP()
+        ):
+            self.assertTrue(
+                await verification.send_verification_email(
+                    "person@example.com", "123456", "person#0001"
+                )
+            )
+
+        message = message_from_string(sent["message"])
+        self.assertTrue(message.is_multipart())
+        plain, html = message.get_payload()
+        self.assertIn("123456", plain.get_payload(decode=True).decode())
+        html_body = html.get_payload(decode=True).decode()
+        self.assertIn("#ba0c2f", html_body)
+        self.assertIn("Verify your Discord account", html_body)
+        self.assertIn("123456", html_body)
 
     async def test_verification_email_does_not_block_event_loop(self):
         self.add_verified(101, email="person@example.com")
