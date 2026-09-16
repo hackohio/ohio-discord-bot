@@ -132,7 +132,7 @@ def add_registration(
     is_p = "participant" in roles
     is_j = "judge" in roles
     is_m = "mentor" in roles
-
+    
     with _LOCK, _get_connection() as conn:
         # "Upsert" Logic: If email exists, UPDATE fields. If not, INSERT.
         conn.execute(
@@ -259,6 +259,7 @@ def add_verified_user(
     email: str, discord_id: int, username: str, *, replace: bool = False
 ) -> bool:
     """Link a Discord user to a registration, optionally replacing its owner."""
+    email = normalize_email(email)
     with _LOCK, _get_connection() as conn:
         if replace:
             conn.execute(
@@ -280,6 +281,17 @@ def add_verified_user(
         logger.info("verified_user_already_exists email=%r", email)
     return added
 
+def normalize_email(email: str) -> str:
+    updatedEmail = email.lower().strip()
+    updatedEmail = updatedEmail.replace(" ","")
+    if updatedEmail.count("@") != 1:
+        if not "@" in updatedEmail:
+            logger.info("Missing '@' symbol: please reenter email")
+            return ""
+        else:
+            logger.info("Email must only contain one '@' symbol: please reenter email")
+            return ""
+    return updatedEmail
 
 def remove_verified_user(email: str):
     """Removes the verification status."""
