@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 NOTIFICATION_COOLDOWN = 30
 REMOVAL_DM = (
     "Your message was removed because normal messages are not allowed in that "
-    "channel. Please use the appropriate slash command, such as `/verify`."
+    "channel. Please use the appropriate slash command, such as `/verify`. "
     "Reach out to `#ask-an-organizer` if you think this was a mistake."
 )
 REMOVAL_NOTICE = (
@@ -49,7 +49,10 @@ class CleanupCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.guild is None or message.channel.id not in config.cleanup_channel_ids:
+        if (
+            message.guild is None
+            or message.channel.id not in config.cleanup_channel_ids
+        ):
             return
         if self._is_exempt(message):
             return
