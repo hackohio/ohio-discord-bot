@@ -351,7 +351,7 @@ class VerificationCog(commands.Cog):
 
         # Case 2: Email was entered
         else:
-            email = email_or_code
+            email = records.normalize_email(email_or_code)
 
             # Confirm user is registered
             if not records.is_registered(email):

@@ -66,6 +66,17 @@ class RecordsTestCase(DatabaseTestCase):
         self.assertFalse(records.is_registered("person@example.com"))
         self.assertFalse(records.is_verified(101))
 
+    def test_email_normalization_is_applied_before_storage(self):
+        records.add_registration(
+            " Person @ Example.COM ", "Pat", "Person", False, ["participant"]
+        )
+
+        self.assertTrue(records.is_registered("person@example.com"))
+        self.assertTrue(
+            records.add_verified_user(" Person @ Example.COM ", 101, "person#0001")
+        )
+        self.assertEqual(records.get_verified_email(101), "person@example.com")
+
     def test_unregistered_email_cannot_be_verified(self):
         with self.assertRaises(sqlite3.IntegrityError):
             records.add_verified_user("missing@example.com", 101, "missing#0001")

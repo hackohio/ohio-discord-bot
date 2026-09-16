@@ -128,11 +128,12 @@ def add_registration(
     email: str, first_name: str, last_name: str, is_capstone: bool, roles: list
 ):
     """Adds a new user to the registration table."""
+    email = normalize_email(email)
 
     is_p = "participant" in roles
     is_j = "judge" in roles
     is_m = "mentor" in roles
-    
+
     with _LOCK, _get_connection() as conn:
         # "Upsert" Logic: If email exists, UPDATE fields. If not, INSERT.
         conn.execute(
@@ -635,6 +636,7 @@ def get_all_grace_periods() -> list:
 
 def add_code(email: str, discord_id: int, code: str, expiration_time: int):
     """Stores a generated verification code and its expiration timestamp."""
+    email = normalize_email(email)
     expires_at = time.time() + expiration_time
     with _LOCK, _get_connection() as conn:
         conn.execute(
