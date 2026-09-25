@@ -79,7 +79,22 @@ class LfgCog(commands.Cog):
         """Show the current looking-for-group pool."""
         await interaction.response.defer(ephemeral=True)
 
-        seekers = records.get_lfg_list()
+        if not records.is_verified(interaction.user.id):
+            await interaction.edit_original_response(
+                content="You need to verify first! Use the `/verify` command, then try again."
+            )
+            return
+
+        viewer = records.get_verified_user(interaction.user.id)
+        if not viewer["is_participant"]:
+            await interaction.edit_original_response(
+                content="Only verified participants can view teammates in the LFG pool."
+            )
+            return
+
+        seekers = records.get_lfg_list(
+            records.get_verified_category(interaction.user.id)
+        )
         present = []
         for seeker in seekers:
             member = interaction.guild.get_member(seeker["discord_id"])

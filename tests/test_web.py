@@ -76,6 +76,36 @@ class WebhookTestCase(DatabaseTestCase):
         self.assertEqual(records.get_user_roles("person@example.com"), ["participant"])
         self.assertTrue(registration["is_capstone"])
 
+    def test_professional_registration_and_category_validation(self):
+        response = self.post(
+            {
+                "email": "professional@example.com",
+                "is_professional": True,
+            }
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json["is_professional"])
+        self.assertTrue(
+            records.get_registration("professional@example.com")["is_professional"]
+        )
+
+        response = self.post(
+            {"email": "invalid@example.com", "is_professional": "true"}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("is_professional", response.json["error"])
+
+        response = self.post(
+            {
+                "email": "both@example.com",
+                "is_capstone": True,
+                "is_professional": True,
+            }
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot both be true", response.json["error"])
+        self.assertIsNone(records.get_registration("both@example.com"))
+
     def test_judge_and_mentor_role_codes_are_mapped(self):
         response = self.post(
             {

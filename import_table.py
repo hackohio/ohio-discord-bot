@@ -57,12 +57,16 @@ def import_file(source_filename: str) -> dict:
                     totals["missing_email"] += 1
                     continue
 
-                is_capstone = (
-                    entry.get("Capstone Team") == "Yes" if is_participant else False
-                )
                 if is_participant:
+                    professional_value = entry.get("is_professional")
+                    if professional_value not in {None, "", "Yes", "No"}:
+                        raise ValueError("is_professional must be Yes or No")
+                    is_capstone = entry.get("Capstone Team") == "Yes"
+                    is_professional = professional_value == "Yes"
                     roles = ["participant"]
                 else:
+                    is_capstone = False
+                    is_professional = False
                     role_input = entry.get("Roles") or ""
                     roles = []
                     if JUDGE_ROLE_NUM in role_input:
@@ -77,7 +81,8 @@ def import_file(source_filename: str) -> dict:
                 if existing and (
                     existing["first_name"] == entry["First Name"]
                     and existing["last_name"] == entry["Last Name"]
-                    and (not is_participant or existing["is_capstone"] == is_capstone)
+                    and existing["is_capstone"] == is_capstone
+                    and existing["is_professional"] == is_professional
                     and set(records.get_user_roles(email)) == set(roles)
                 ):
                     totals["duplicate"] += 1
@@ -90,6 +95,7 @@ def import_file(source_filename: str) -> dict:
                     entry["Last Name"],
                     is_capstone,
                     roles,
+                    is_professional=is_professional,
                 )
                 totals[outcome] += 1
             except Exception as exc:

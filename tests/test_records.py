@@ -34,6 +34,7 @@ class RecordsTestCase(DatabaseTestCase):
                 "first_name": "Updated",
                 "last_name": "Name",
                 "is_capstone": 0,
+                "is_professional": 0,
                 "is_participant": 0,
                 "is_judge": 0,
                 "is_mentor": 1,
@@ -65,6 +66,43 @@ class RecordsTestCase(DatabaseTestCase):
         records.remove_registration("person@example.com")
         self.assertFalse(records.is_registered("person@example.com"))
         self.assertFalse(records.is_verified(101))
+
+    def test_professional_category_persists_and_team_category_is_independent(self):
+        records.add_registration(
+            "professional@example.com",
+            "Pro",
+            "User",
+            False,
+            ["participant"],
+            is_professional=True,
+        )
+        records.add_verified_user("professional@example.com", 101, "pro#0001")
+        self.assertEqual(records.get_category(False, True), "professional")
+        self.assertEqual(records.get_verified_user(101)["is_professional"], 1)
+
+        team_id = records.create_team(
+            "Professional Team", False, 201, 202, 203, is_professional=True
+        )
+        records.join_team(101, team_id)
+        records.add_registration(
+            "professional@example.com", "Pro", "User", False, ["participant"]
+        )
+        self.assertEqual(
+            records.get_registration("professional@example.com")["is_professional"],
+            0,
+        )
+        self.assertEqual(records.get_team(team_id)["is_professional"], 1)
+
+        with self.assertRaisesRegex(ValueError, "cannot both be true"):
+            records.add_registration(
+                "invalid@example.com",
+                "Invalid",
+                "User",
+                True,
+                ["participant"],
+                is_professional=True,
+            )
+        self.assertIsNone(records.get_registration("invalid@example.com"))
 
     def test_email_normalization_is_applied_before_storage(self):
         records.add_registration(
@@ -236,7 +274,7 @@ class RecordsTestCase(DatabaseTestCase):
         self.assertTrue(records.is_looking(101))
         self.assertTrue(records.is_looking(102))
         self.assertEqual(
-            records.get_lfg_list(),
+            records.get_lfg_list(records.ParticipantCategory.STANDARD),
             [
                 {
                     "discord_id": 101,
@@ -279,6 +317,19 @@ class RecordsTestCase(DatabaseTestCase):
         with sqlite3.connect(records._DATABASE_FILE) as connection:
             connection.execute(
                 """
+                CREATE TABLE registration (
+                    email TEXT PRIMARY KEY,
+                    first_name TEXT,
+                    last_name TEXT,
+                    is_capstone BOOLEAN DEFAULT 0,
+                    is_participant BOOLEAN DEFAULT 0,
+                    is_judge BOOLEAN DEFAULT 0,
+                    is_mentor BOOLEAN DEFAULT 0
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE teams (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
@@ -297,7 +348,14 @@ class RecordsTestCase(DatabaseTestCase):
             columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(teams)")
             }
+        self.assertIn("is_professional", columns)
         self.assertIn("grace_period", columns)
+        with records._get_connection() as connection:
+            registration_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(registration)")
+            }
+        self.assertIn("is_professional", registration_columns)
 
     def test_legacy_codes_table_gets_expiration_column(self):
         legacy_database = self._database_directory.name + "/legacy.db"

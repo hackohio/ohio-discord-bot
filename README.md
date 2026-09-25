@@ -49,10 +49,11 @@ organization folder. It must define these sections and values:
 The webhook expects an `api-key` header that matches a configured key of at
 least 32 characters. Generate one with
 `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Its JSON body
-includes `email`, `first_name`, `last_name`, `is_capstone`, and an optional
-comma-separated `roles` value; role codes `1` and `2` map to judge and mentor,
-respectively. Deployed requests use HTTPS; the internal Waitress port is
-loopback-only.
+includes `email`, `first_name`, `last_name`, `is_capstone`, an optional
+`is_professional` boolean, and an optional comma-separated `roles` value. The
+category flags cannot both be true; omitted `is_professional` defaults to
+`false`. Role codes `1` and `2` map to judge and mentor, respectively. Deployed
+requests use HTTPS; the internal Waitress port is loopback-only.
 
 ## Project layout
 

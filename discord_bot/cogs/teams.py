@@ -32,7 +32,7 @@ class TeamJoinStatus(IntEnum):
     NOT_VERIFIED = -1
     NOT_PARTICIPANT = -2
     ALREADY_ON_TEAM = -3
-    CAPSTONE_MISMATCH = -4
+    CATEGORY_MISMATCH = -4
 
 
 async def handle_team_deletion(team_id: int, guild: discord.Guild):  # TESTED
@@ -118,7 +118,8 @@ async def delete_team_channels(team_id: int, guild: discord.Guild):  # TESTED
 
 
 def can_join_team(
-    added_member: discord.Member, capstone_team: bool | None = None
+    added_member: discord.Member,
+    team_category: records.ParticipantCategory | None = None,
 ) -> TeamJoinStatus:  # TESTED
     """Return why a member can or cannot join a team."""
 
@@ -133,8 +134,9 @@ def can_join_team(
     if records.get_user_team_id(added_member.id):
         return TeamJoinStatus.ALREADY_ON_TEAM
 
-    if capstone_team is not None and capstone_team != user_data["is_capstone"]:
-        return TeamJoinStatus.CAPSTONE_MISMATCH
+    user_category = records.get_verified_category(added_member.id)
+    if team_category is not None and team_category != user_category:
+        return TeamJoinStatus.CATEGORY_MISMATCH
     return TeamJoinStatus.ALLOWED
 
 
@@ -439,7 +441,10 @@ class TeamsCog(commands.Cog):
             return
 
         # Validate every explicitly selected teammate before creating anything.
-        is_capstone = records.get_verified_user(user.id)["is_capstone"]
+        creator_data = records.get_verified_user(user.id)
+        is_capstone = creator_data["is_capstone"]
+        is_professional = creator_data["is_professional"]
+        team_category = records.get_verified_category(user.id)
         members = [teammate_1, teammate_2, teammate_3]
         valid_members = []
         validation_errors = []
@@ -460,7 +465,7 @@ class TeamsCog(commands.Cog):
                 validation_errors.append(f"{mem.mention} was selected more than once.")
                 continue
             selected_ids.add(mem.id)
-            status = can_join_team(mem, is_capstone)
+            status = can_join_team(mem, team_category)
             if status == TeamJoinStatus.ALLOWED:
                 valid_members.append(mem)
             elif status in (
@@ -472,9 +477,10 @@ class TeamsCog(commands.Cog):
                 )
             elif status == TeamJoinStatus.ALREADY_ON_TEAM:
                 validation_errors.append(f"{mem.mention} is already on a team.")
-            elif status == TeamJoinStatus.CAPSTONE_MISMATCH:
+            elif status == TeamJoinStatus.CATEGORY_MISMATCH:
                 validation_errors.append(
-                    f"{mem.mention} does not have the same capstone status as you."
+                    f"{mem.mention} cannot join a {team_category} team. Only "
+                    f"{team_category} participants can join."
                 )
 
         if not valid_members or validation_errors:
@@ -622,13 +628,14 @@ class TeamsCog(commands.Cog):
                 category_channel.id,
                 text_channel.id,
                 voice_channel.id if voice_channel else None,
+                is_professional=is_professional,
             )
             logger.info(
-                "team_database_row_created interaction_id=%r team_id=%r team_name=%r capstone=%r",
+                "team_database_row_created interaction_id=%r team_id=%r team_name=%r category=%r",
                 interaction.id,
                 team_id,
                 team_name,
-                is_capstone,
+                team_category,
             )
 
             # Add the creator and all selected teammates only after all validation passed.
@@ -704,13 +711,23 @@ class TeamsCog(commands.Cog):
             title=f"Welcome Team #{team_id}: {team_name}!",
             description=f"Manage your team using `/add_member`, `/remove_member`, `leave_team`, and `/my_team`.\n\n👑 **Team Lead:** {user.mention}",
         )
-        if is_capstone:
+        if team_category is records.ParticipantCategory.CAPSTONE:
             welcome_embed.description += "\n\u200b"
             welcome_embed.add_field(
                 name="🎓 Capstone Team Rules",
                 value=(
                     "- You can add up to **5 members** (All must be Capstone)\n"
                     "- You will be exclusively judged in the Capstone category\n"
+                    f"[Re-register here if this is a mistake]({config.contact_registration_link})"
+                ),
+                inline=False,
+            )
+        elif team_category is records.ParticipantCategory.PROFESSIONAL:
+            welcome_embed.description += "\n\u200b"
+            welcome_embed.add_field(
+                name="💼 Professional Team Rules",
+                value=(
+                    "- Teams have **2–4 members, all professional.**\n"
                     f"[Re-register here if this is a mistake]({config.contact_registration_link})"
                 ),
                 inline=False,
@@ -853,8 +870,12 @@ class TeamsCog(commands.Cog):
 
         # Check that team is not full
         team_id = records.get_user_team_id(team_user.id)
-        is_capstone = records.get_team(team_id)["is_capstone"]
-        max_team_size = CAPSTONE_TEAM_SIZE if is_capstone else MAX_TEAM_SIZE
+        team_category = records.get_team_category(team_id)
+        max_team_size = (
+            CAPSTONE_TEAM_SIZE
+            if team_category is records.ParticipantCategory.CAPSTONE
+            else MAX_TEAM_SIZE
+        )
         if records.get_team_size(team_id) >= max_team_size:
             _log_rejection(
                 interaction,
@@ -870,7 +891,7 @@ class TeamsCog(commands.Cog):
             return
 
         # Check if user can join the team
-        status = can_join_team(added_user, is_capstone)
+        status = can_join_team(added_user, team_category)
         if status in (
             TeamJoinStatus.NOT_VERIFIED,
             TeamJoinStatus.NOT_PARTICIPANT,
@@ -896,15 +917,20 @@ class TeamsCog(commands.Cog):
                 content=f"Failed to add team member. {added_user.mention} is already on a team. To join, they must leave using /leave_team",
             )
             return
-        if status == TeamJoinStatus.CAPSTONE_MISMATCH:
+        if status == TeamJoinStatus.CATEGORY_MISMATCH:
             _log_rejection(
                 interaction,
-                "capstone_mismatch",
+                "category_mismatch",
                 team_id=team_id,
+                team_category=team_category,
                 target=added_user,
             )
             await interaction.edit_original_response(
-                content=f"Failed to add team member. {added_user.mention} is {'NOT ' if is_capstone else ''}registered as a capstone participant while you are {'' if is_capstone else 'NOT '}registered as capstone. If this is a mistake, members can re-regsiter at {config.contact_registration_link}",
+                content=(
+                    f"Failed to add team member. {added_user.mention} cannot join a "
+                    f"{team_category} team. Only {team_category} participants can join. "
+                    f"If this is a mistake, re-register at {config.contact_registration_link}"
+                ),
             )
             return
 

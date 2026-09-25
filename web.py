@@ -1,8 +1,8 @@
 import logging
-from pathlib import Path
 import secrets
 import time
 import uuid
+from pathlib import Path
 
 from flask import Flask, g, jsonify, request
 from waitress import serve
@@ -30,6 +30,7 @@ Format for Post Requests JSON
         'last_name': str,
         
         'is_capstone': bool,
+        'is_professional': bool,
         'roles': "role,role", (comma-separated)        
     }
 }
@@ -145,9 +146,39 @@ def push_user():
         )
         return jsonify({"error": "is_capstone must be a boolean"}), 400
 
+    is_professional = data.get("is_professional", False)
+    if not isinstance(is_professional, bool):
+        logger.warning(
+            "webhook_request_rejected request_id=%r reason=%r",
+            request_id,
+            "invalid_is_professional",
+        )
+        return jsonify({"error": "is_professional must be a boolean"}), 400
+    try:
+        records.get_category(is_capstone, is_professional)
+    except ValueError:
+        logger.warning(
+            "webhook_request_rejected request_id=%r reason=%r",
+            request_id,
+            "invalid_categories",
+        )
+        return (
+            jsonify(
+                {"error": "is_capstone and is_professional cannot both be true"}
+            ),
+            400,
+        )
+
     # 5. Add Registered User to Database
     try:
-        records.add_registration(email, first_name, last_name, is_capstone, roles)
+        records.add_registration(
+            email,
+            first_name,
+            last_name,
+            is_capstone,
+            roles,
+            is_professional=is_professional,
+        )
         return (
             jsonify(
                 {
@@ -155,6 +186,7 @@ def push_user():
                     "first_name": first_name,
                     "last_name": last_name,
                     "is_capstone": is_capstone,
+                    "is_professional": is_professional,
                     "roles": roles,
                 }
             ),

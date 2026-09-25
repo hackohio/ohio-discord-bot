@@ -36,7 +36,9 @@ class OrganizerCog(commands.Cog):
         description="Manually verify a Discord account for this event (Organizers only)",
     )
     @app_commands.describe(
-        role="User role: mentor, judge, participant, or mentor/judge"
+        role="User role: mentor, judge, participant, or mentor/judge",
+        is_capstone="Whether the participant is in the capstone category",
+        is_professional="Whether the participant is in the professional category",
     )
     @app_commands.choices(
         role=[
@@ -54,8 +56,9 @@ class OrganizerCog(commands.Cog):
         email_address: str,
         first_name: str,
         last_name: str,
-        is_capstone: bool,
         role: str,
+        is_capstone: bool = False,
+        is_professional: bool = False,
     ):  # TESTED
         """
         Manually verifies a Discord account for the event, allowing organizers to assign roles and verify users.
@@ -71,6 +74,13 @@ class OrganizerCog(commands.Cog):
         """
 
         await interaction.response.defer(ephemeral=True)
+
+        try:
+            records.get_category(is_capstone, is_professional)
+        except ValueError as exc:
+            _log_rejection(interaction, "invalid_categories")
+            await interaction.edit_original_response(content=str(exc))
+            return
 
         allowed_roles = {"mentor", "judge", "participant", "mentor/judge"}
         if role not in allowed_roles:
@@ -106,7 +116,12 @@ class OrganizerCog(commands.Cog):
         # Case 2: User is not Verified (Register and Verify User with the appropriate roles)
         else:
             records.add_registration(
-                email_address, first_name, last_name, is_capstone, roles_to_add
+                email_address,
+                first_name,
+                last_name,
+                is_capstone,
+                roles_to_add,
+                is_professional=is_professional,
             )
             if not records.add_verified_user(
                 email_address,
