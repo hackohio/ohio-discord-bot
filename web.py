@@ -156,8 +156,18 @@ def push_user():
         return jsonify({"error": "is_professional must be a boolean"}), 400
     try:
         records.get_category(is_capstone, is_professional)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    except ValueError:
+        logger.warning(
+            "webhook_request_rejected request_id=%r reason=%r",
+            request_id,
+            "invalid_categories",
+        )
+        return (
+            jsonify(
+                {"error": "is_capstone and is_professional cannot both be true"}
+            ),
+            400,
+        )
 
     # 5. Add Registered User to Database
     try:
