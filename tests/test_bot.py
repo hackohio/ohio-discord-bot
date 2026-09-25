@@ -153,18 +153,27 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         records.join_team(101, team_id)
         self.assertEqual(teams.can_join_team(assigned), teams.TeamJoinStatus.ALREADY_ON_TEAM)
 
-        capstone = make_member(102)
+        members = {
+            records.ParticipantCategory.CAPSTONE: make_member(102),
+            records.ParticipantCategory.STANDARD: make_member(103),
+            records.ParticipantCategory.PROFESSIONAL: make_member(104),
+        }
         self.add_verified(102, is_capstone=True)
-        standard = make_member(103)
-        self.add_verified(103, is_capstone=False)
-        self.assertEqual(
-            teams.can_join_team(capstone, False), teams.TeamJoinStatus.CAPSTONE_MISMATCH
-        )
-        self.assertEqual(
-            teams.can_join_team(standard, True), teams.TeamJoinStatus.CAPSTONE_MISMATCH
-        )
-        self.assertEqual(teams.can_join_team(capstone, True), teams.TeamJoinStatus.ALLOWED)
-        self.assertEqual(teams.can_join_team(standard, False), teams.TeamJoinStatus.ALLOWED)
+        self.add_verified(103)
+        self.add_verified(104, is_professional=True)
+
+        for member_category, member in members.items():
+            for team_category in records.ParticipantCategory:
+                expected = (
+                    teams.TeamJoinStatus.ALLOWED
+                    if member_category is team_category
+                    else teams.TeamJoinStatus.CATEGORY_MISMATCH
+                )
+                self.assertEqual(
+                    teams.can_join_team(member, team_category),
+                    expected,
+                    (member_category, team_category),
+                )
 
     async def test_create_team_rejects_invalid_creator_with_original_response(self):
         interaction = make_interaction(make_member(999))
@@ -199,11 +208,11 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(records.get_user_team_id(valid_teammate.id))
         self.assert_deferred_response(interaction)
 
-    async def test_create_team_succeeds_without_validation_warnings(self):
+    async def test_professional_team_creation_succeeds(self):
         creator = make_member(101)
         teammate = make_member(102)
-        self.add_verified(creator.id)
-        self.add_verified(teammate.id)
+        self.add_verified(creator.id, is_professional=True)
+        self.add_verified(teammate.id, is_professional=True)
 
         team_role = FakeRole(201)
         team_role.mention = "<@&201>"
@@ -242,6 +251,11 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertIn("Team channel: #new-team", embed.description)
         self.assertEqual(records.get_user_team_id(creator.id), 1)
         self.assertEqual(records.get_user_team_id(teammate.id), 1)
+        self.assertEqual(
+            records.get_team_category(1), records.ParticipantCategory.PROFESSIONAL
+        )
+        welcome_embed = text_channel.send.call_args_list[0].kwargs["embed"]
+        self.assertEqual(welcome_embed.fields[0].name, "💼 Professional Team Rules")
         self.assert_deferred_response(interaction)
 
     async def test_create_team_rolls_back_if_teammate_is_claimed_during_setup(self):
@@ -393,7 +407,10 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
 
         update_interaction = make_interaction(user)
         await lfg_callback(self.lfg_cog, update_interaction, "Python")
-        self.assertEqual(records.get_lfg_list()[0]["skills"], "Python")
+        self.assertEqual(
+            records.get_lfg_list(records.ParticipantCategory.STANDARD)[0]["skills"],
+            "Python",
+        )
         self.assertIn(
             "Updated your skills",
             update_interaction.edit_original_response.call_args.kwargs["content"],
@@ -422,6 +439,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assert_deferred_response(team_interaction)
 
     async def test_lfg_view_filters_absent_members_and_formats_skills(self):
+        self.add_verified(500)
         records.add_registration("alice@example.com", "Alice", "One", False, ["participant"])
         records.add_verified_user("alice@example.com", 101, "alice#0001")
         self.add_verified(102)
@@ -448,7 +466,49 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Go", embed.description)
         self.assert_deferred_response(interaction)
 
+    async def test_lfg_view_only_shows_the_viewers_category(self):
+        categories = {
+            "Standard": ({}, 500, 101),
+            "Capstone": ({"is_capstone": True}, 501, 102),
+            "Professional": ({"is_professional": True}, 502, 103),
+        }
+        members = {}
+        for label, (flags, viewer_id, seeker_id) in categories.items():
+            self.add_verified(viewer_id, **flags)
+            self.add_verified(seeker_id, **flags)
+            records.add_to_lfg(seeker_id, f"{label} skills")
+            members[viewer_id] = make_member(viewer_id)
+            members[seeker_id] = make_member(seeker_id)
+
+        guild = FakeGuild(members=members)
+        for label, (_, viewer_id, _) in categories.items():
+            interaction = make_interaction(members[viewer_id], guild)
+            await lfg_view_callback(self.lfg_cog, interaction)
+            description = interaction.edit_original_response.call_args.kwargs[
+                "embed"
+            ].description
+            self.assertIn(f"{label} skills", description)
+            for other_label in categories.keys() - {label}:
+                self.assertNotIn(f"{other_label} skills", description)
+
+    async def test_lfg_view_rejects_unverified_and_nonparticipant_viewers(self):
+        interaction = make_interaction(make_member(500), FakeGuild())
+        await lfg_view_callback(self.lfg_cog, interaction)
+        self.assertIn(
+            "verify first",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+
+        self.add_verified(501, roles=["mentor"])
+        interaction = make_interaction(make_member(501), FakeGuild())
+        await lfg_view_callback(self.lfg_cog, interaction)
+        self.assertIn(
+            "Only verified participants",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+
     async def test_lfg_view_truncates_long_lists(self):
+        self.add_verified(500)
         for member_id in range(100, 130):
             self.add_verified(member_id)
             records.add_to_lfg(member_id, "x" * 150)
@@ -465,6 +525,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assert_deferred_response(interaction)
 
     async def test_lfg_view_reports_empty_pool(self):
+        self.add_verified(500)
         interaction = make_interaction(make_member(500), FakeGuild())
         await lfg_view_callback(self.lfg_cog, interaction)
         embed = interaction.edit_original_response.call_args.kwargs["embed"]
@@ -680,6 +741,26 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_professional_team_rejects_a_fifth_member(self):
+        for member_id in range(101, 106):
+            self.add_verified(member_id, is_professional=True)
+        team_id = records.create_team(
+            "Professional Team", False, 201, 202, 203, is_professional=True
+        )
+        for member_id in range(101, 105):
+            records.join_team(member_id, team_id)
+
+        interaction = make_interaction(make_member(101), FakeGuild())
+        await teams.TeamsCog.add_member.callback(
+            teams.TeamsCog(SimpleNamespace()), interaction, make_member(105)
+        )
+
+        self.assertIn(
+            "maximum of 4 members",
+            interaction.edit_original_response.call_args.kwargs["content"],
+        )
+        self.assertIsNone(records.get_user_team_id(105))
+
     async def test_singleton_team_is_deleted_after_deadline(self):
         team_id, guild, members, _ = self.make_team([101], lead=101, grace_period=99.0)
 
@@ -826,8 +907,8 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
                 "attendee@example.com",
                 "Different",
                 "Person",
-                True,
                 "mentor",
+                is_capstone=True,
             )
 
         registration = records.get_registration("attendee@example.com")
@@ -843,6 +924,27 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         )
         sync_roles.assert_awaited_once_with(target)
         self.assert_deferred_response(interaction)
+
+    async def test_overify_category_flags_default_to_false(self):
+        from discord_bot.cogs import organizer
+
+        target = make_member(102)
+        interaction = make_interaction(make_member(999))
+
+        with patch.object(organizer, "sync_user_roles", new=AsyncMock()):
+            await organizer.OrganizerCog.overify.callback(
+                organizer.OrganizerCog(SimpleNamespace()),
+                interaction,
+                target,
+                "attendee@example.com",
+                "Test",
+                "Person",
+                "participant",
+            )
+
+        registration = records.get_registration("attendee@example.com")
+        self.assertFalse(registration["is_capstone"])
+        self.assertFalse(registration["is_professional"])
 
     async def test_organizer_removal_stays_immediate(self):
         from discord_bot.cogs import organizer

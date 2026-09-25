@@ -28,6 +28,7 @@ class DatabaseTestMixin:
         *,
         username=None,
         is_capstone=False,
+        is_professional=False,
         roles=None,
     ):
         email = email or f"user{discord_id}@example.com"
@@ -38,6 +39,7 @@ class DatabaseTestMixin:
             "User",
             is_capstone,
             roles if roles is not None else ["participant"],
+            is_professional=is_professional,
         )
         records.add_verified_user(email, discord_id, username)
         return email
