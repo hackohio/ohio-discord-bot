@@ -37,8 +37,9 @@ class OrganizerCog(commands.Cog):
     )
     @app_commands.describe(
         role="User role: mentor, judge, participant, or mentor/judge",
-        is_capstone="Whether the participant is in the capstone category",
-        is_professional="Whether the participant is in the professional category",
+        is_capstone="Whether the participant is in the capstone category; omit to keep existing status",
+        is_professional="Whether the participant is in the professional category; omit to keep existing status",
+        is_sponsor="Whether the attendee is a sponsor; omit to keep existing status",
     )
     @app_commands.choices(
         role=[
@@ -57,14 +58,16 @@ class OrganizerCog(commands.Cog):
         first_name: str,
         last_name: str,
         role: str,
-        is_capstone: bool = False,
-        is_professional: bool = False,
+        is_capstone: bool | None = None,
+        is_professional: bool | None = None,
+        is_sponsor: bool | None = None,
     ):  # TESTED
         """
         Manually verifies a Discord account for the event, allowing organizers to assign roles and verify users.
 
         If the user doesn't exist, add them to the database and assign roles.
-        If the user exists, update role and updata database.
+        If the user exists, update their roles and registration flags.
+        Omitted flags retain stored values; explicit flags overwrite them.
         Args:
             ctxt (discord.Interaction): The Context of the Interaction.
             flags (registerFlag): Flag that contains registrant information (user, email, and role)
@@ -75,13 +78,6 @@ class OrganizerCog(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
-        try:
-            records.get_category(is_capstone, is_professional)
-        except ValueError as exc:
-            _log_rejection(interaction, "invalid_categories")
-            await interaction.edit_original_response(content=str(exc))
-            return
-
         allowed_roles = {"mentor", "judge", "participant", "mentor/judge"}
         if role not in allowed_roles:
             _log_rejection(interaction, "invalid_role", requested_role=role)
@@ -90,41 +86,65 @@ class OrganizerCog(commands.Cog):
             )
             return
 
+        already_verified = records.is_verified(member_to_promote.id)
+        email = (
+            records.get_verified_email(member_to_promote.id)
+            if already_verified
+            else records.normalize_email(email_address)
+        )
+        existing = records.get_registration(email)
+        flags = {
+            "is_capstone": is_capstone,
+            "is_professional": is_professional,
+            "is_sponsor": is_sponsor,
+        }
+        for flag, value in flags.items():
+            if value is None:
+                flags[flag] = bool(existing and existing[flag])
+
+        try:
+            records.get_category(flags["is_capstone"], flags["is_professional"])
+        except ValueError as exc:
+            _log_rejection(interaction, "invalid_categories")
+            await interaction.edit_original_response(content=str(exc))
+            return
+
         roles_to_add = ["mentor", "judge"] if role == "mentor/judge" else [role]
-
-        # Case 1: User is already verified (Add Role)
-        if records.is_verified(member_to_promote.id):
-            verified_email = records.get_verified_email(member_to_promote.id)
-
-            roles = records.get_user_roles(verified_email)
+        if already_verified:
+            roles = records.get_user_roles(email)
             new_roles = [
                 role_name for role_name in roles_to_add if role_name not in roles
             ]
-            if not new_roles:
-                await interaction.edit_original_response(
-                    content=f"`<{member_to_promote.name}>` is verified and already has the role `<{role}>`.",
-                )
-                return
-
             roles.extend(new_roles)
-            records.update_roles(verified_email, roles)
-
-            await interaction.edit_original_response(
-                content=f"`<{member_to_promote.name}>` is already verified but has been given the role `<{role}>`.",
-            )
-
-        # Case 2: User is not Verified (Register and Verify User with the appropriate roles)
+            first_name = existing["first_name"]
+            last_name = existing["last_name"]
         else:
-            records.add_registration(
-                email_address,
-                first_name,
-                last_name,
-                is_capstone,
-                roles_to_add,
-                is_professional=is_professional,
+            roles = roles_to_add
+
+        records.add_registration(
+            email,
+            first_name,
+            last_name,
+            flags["is_capstone"],
+            roles,
+            is_professional=flags["is_professional"],
+            is_sponsor=flags["is_sponsor"],
+        )
+
+        if already_verified:
+            message = (
+                f"`<{member_to_promote.name}>` is already verified but has been "
+                f"given the role `<{role}>`."
+                if new_roles
+                else f"`<{member_to_promote.name}>` is verified and already has "
+                f"the role `<{role}>`."
             )
+            await interaction.edit_original_response(
+                content=f"{message} Registration updated."
+            )
+        else:
             if not records.add_verified_user(
-                email_address,
+                email,
                 member_to_promote.id,
                 member_to_promote.name,
                 replace=True,

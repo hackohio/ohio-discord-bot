@@ -17,6 +17,7 @@ _TEST_CONFIG.write_text(
  participant_role_id=5
  mentor_role_id=6
  judge_role_id=7
+ sponsor_role_id=11
  team_assigned_role_id=8
  all_access_pass_role_id=9
  verified_role_id=10

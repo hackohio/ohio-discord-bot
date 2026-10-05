@@ -61,6 +61,7 @@ def _initialize_db():
 
                 is_capstone BOOLEAN NOT NULL DEFAULT 0,
                 is_professional BOOLEAN NOT NULL DEFAULT 0,
+                is_sponsor BOOLEAN NOT NULL DEFAULT 0,
 
                 is_participant BOOLEAN DEFAULT 0,
                 is_judge BOOLEAN DEFAULT 0,
@@ -69,13 +70,17 @@ def _initialize_db():
         """)
 
         registration_columns = {
-            row["name"]
-            for row in conn.execute(f"PRAGMA table_info({_REG_TABLE_NAME})")
+            row["name"] for row in conn.execute(f"PRAGMA table_info({_REG_TABLE_NAME})")
         }
         if "is_professional" not in registration_columns:
             conn.execute(
                 f"ALTER TABLE {_REG_TABLE_NAME} "
                 "ADD COLUMN is_professional BOOLEAN NOT NULL DEFAULT 0"
+            )
+        if "is_sponsor" not in registration_columns:
+            conn.execute(
+                f"ALTER TABLE {_REG_TABLE_NAME} "
+                "ADD COLUMN is_sponsor BOOLEAN NOT NULL DEFAULT 0"
             )
 
         # Verified Table
@@ -84,7 +89,7 @@ def _initialize_db():
         conn.execute(f"""
             CREATE TABLE IF NOT EXISTS {_VERIFIED_TABLE_NAME} (
                 email TEXT PRIMARY KEY REFERENCES {_REG_TABLE_NAME}(email) ON DELETE CASCADE,
-                
+
                 discord_id INTEGER UNIQUE,
                 username TEXT UNIQUE NOT NULL,
                 team_id INTEGER REFERENCES {_TEAM_TABLE_NAME}(id) ON DELETE SET NULL
@@ -118,9 +123,7 @@ def _initialize_db():
                 "ADD COLUMN is_professional BOOLEAN NOT NULL DEFAULT 0"
             )
         if "grace_period" not in team_columns:
-            conn.execute(
-                f"ALTER TABLE {_TEAM_TABLE_NAME} ADD COLUMN grace_period REAL"
-            )
+            conn.execute(f"ALTER TABLE {_TEAM_TABLE_NAME} ADD COLUMN grace_period REAL")
 
         # 4. CODES TABLE (Temporary Storage)
         conn.execute(f"""
@@ -180,8 +183,9 @@ def add_registration(
     roles: list,
     *,
     is_professional: bool = False,
+    is_sponsor: bool = False,
 ):
-    """Adds a new user to the registration table."""
+    """Insert a registration or overwrite it with the supplied values."""
     get_category(is_capstone, is_professional)
     email = normalize_email(email)
 
@@ -193,13 +197,14 @@ def add_registration(
         # "Upsert" Logic: If email exists, UPDATE fields. If not, INSERT.
         conn.execute(
             f"""
-            INSERT INTO {_REG_TABLE_NAME} (email, first_name, last_name, is_capstone, is_professional, is_participant, is_judge, is_mentor)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO {_REG_TABLE_NAME} (email, first_name, last_name, is_capstone, is_professional, is_sponsor, is_participant, is_judge, is_mentor)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(email) DO UPDATE SET
                 first_name = excluded.first_name,
                 last_name = excluded.last_name,
                 is_capstone = excluded.is_capstone,
                 is_professional = excluded.is_professional,
+                is_sponsor = excluded.is_sponsor,
                 is_participant = excluded.is_participant,
                 is_judge = excluded.is_judge,
                 is_mentor = excluded.is_mentor
@@ -210,6 +215,7 @@ def add_registration(
                 last_name,
                 is_capstone,
                 is_professional,
+                is_sponsor,
                 is_p,
                 is_j,
                 is_m,
@@ -257,7 +263,7 @@ def update_roles(email: str, roles: list):
         conn.execute(
             f"""
             UPDATE {_REG_TABLE_NAME}
-            SET is_participant = ?, is_judge = ?, is_mentor = ? 
+            SET is_participant = ?, is_judge = ?, is_mentor = ?
             WHERE email = ?
         """,
             (is_p, is_j, is_m, email),
@@ -298,7 +304,7 @@ def get_user_roles(email: str) -> list:
     with _get_connection() as conn:
         row = conn.execute(
             """
-            SELECT is_participant, is_judge, is_mentor 
+            SELECT is_participant, is_judge, is_mentor
             FROM registration WHERE email = ?
         """,
             (email,),
@@ -347,9 +353,10 @@ def add_verified_user(
         logger.info("verified_user_already_exists email=%r", email)
     return added
 
+
 def normalize_email(email: str) -> str:
     updatedEmail = email.lower().strip()
-    updatedEmail = updatedEmail.replace(" ","")
+    updatedEmail = updatedEmail.replace(" ", "")
     if updatedEmail.count("@") != 1:
         if "@" not in updatedEmail:
             logger.info("Missing '@' symbol: please reenter email")
@@ -358,6 +365,7 @@ def normalize_email(email: str) -> str:
             logger.info("Email must only contain one '@' symbol: please reenter email")
             return ""
     return updatedEmail
+
 
 def remove_verified_user(email: str):
     """Removes the verification status."""
@@ -395,8 +403,8 @@ def get_verified_user(identifier) -> dict:
     with _get_connection() as conn:
         row = conn.execute(
             f"""
-            SELECT v.discord_id, v.username, v.team_id, 
-                   r.email, r.first_name, r.last_name, 
+            SELECT v.discord_id, v.username, v.team_id,
+                   r.email, r.first_name, r.last_name,
                    r.is_participant, r.is_judge, r.is_mentor,
                    r.is_capstone, r.is_professional
             FROM {_VERIFIED_TABLE_NAME} v
@@ -582,7 +590,7 @@ def get_team_size(identifier) -> int:
             # Query by Name: Look up team first, or use a subquery
             count = conn.execute(
                 f"""
-                SELECT COUNT(*) FROM {_VERIFIED_TABLE_NAME} 
+                SELECT COUNT(*) FROM {_VERIFIED_TABLE_NAME}
                 WHERE team_id = (SELECT id FROM {_TEAM_TABLE_NAME} WHERE name = ?)
             """,
                 (identifier,),
@@ -663,7 +671,7 @@ def get_team_members(identifier) -> list:
             # Query by Name (Subquery to find ID first)
             rows = conn.execute(
                 f"""
-                {query} 
+                {query}
                 WHERE v.team_id = (SELECT id FROM teams WHERE name = ?)
             """,
                 (identifier,),

@@ -46,9 +46,7 @@ class WebhookTestCase(DatabaseTestCase):
         )
 
     def test_invalid_json_and_fields_return_400(self):
-        response = self.client.post(
-            "/post/user", data="not json", headers=self.headers
-        )
+        response = self.client.post("/post/user", data="not json", headers=self.headers)
         self.assertEqual(response.status_code, 400)
 
         for payload in (
@@ -72,9 +70,67 @@ class WebhookTestCase(DatabaseTestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json["email"], "person@example.com")
         self.assertEqual(response.json["roles"], ["participant"])
+        self.assertFalse(response.json["is_sponsor"])
         registration = records.get_registration("person@example.com")
         self.assertEqual(records.get_user_roles("person@example.com"), ["participant"])
         self.assertTrue(registration["is_capstone"])
+
+    def test_sponsor_boolean_defaults_accepts_values_and_rejects_invalid_updates(self):
+        response = self.post(
+            {
+                "email": "sponsor@example.com",
+                "first_name": "Sponsor",
+                "is_sponsor": True,
+            }
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json["is_sponsor"])
+        self.assertEqual(
+            records.get_registration("sponsor@example.com")["is_sponsor"], 1
+        )
+
+        for invalid_value in ("true", 1, None):
+            with self.subTest(is_sponsor=invalid_value):
+                response = self.post(
+                    {
+                        "email": "sponsor@example.com",
+                        "first_name": "Should Not Update",
+                        "is_sponsor": invalid_value,
+                    }
+                )
+                self.assertEqual(response.status_code, 400)
+                registration = records.get_registration("sponsor@example.com")
+                self.assertEqual(registration["first_name"], "Sponsor")
+                self.assertEqual(registration["is_sponsor"], 1)
+
+        response = self.post({"email": "sponsor@example.com", "is_sponsor": False})
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(response.json["is_sponsor"])
+
+        self.post({"email": "sponsor@example.com", "is_sponsor": True})
+        response = self.post({"email": "sponsor@example.com"})
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(records.get_registration("sponsor@example.com")["is_sponsor"])
+
+    def test_resubmission_overwrites_all_flags_and_preserves_verification(self):
+        email = "resubmit@example.com"
+        response = self.post({"email": email, "is_capstone": True, "is_sponsor": True})
+        self.assertEqual(response.status_code, 201)
+        records.add_verified_user(email, 101, "attendee")
+
+        response = self.post({"email": email, "is_professional": True})
+        self.assertEqual(response.status_code, 201)
+        registration = records.get_registration(email)
+        self.assertFalse(registration["is_capstone"])
+        self.assertTrue(registration["is_professional"])
+        self.assertFalse(registration["is_sponsor"])
+
+        response = self.post({"email": email})
+        self.assertEqual(response.status_code, 201)
+        registration = records.get_registration(email)
+        for flag in ("is_capstone", "is_professional", "is_sponsor"):
+            self.assertFalse(registration[flag])
+        self.assertEqual(records.get_verified_email(101), email)
 
     def test_professional_registration_and_category_validation(self):
         response = self.post(
@@ -124,9 +180,7 @@ class WebhookTestCase(DatabaseTestCase):
         with patch.object(
             web.records, "add_registration", side_effect=RuntimeError("private data")
         ):
-            response = self.post(
-                {"email": "person@example.com", "first_name": "Pat"}
-            )
+            response = self.post({"email": "person@example.com", "first_name": "Pat"})
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json, {"error": "An internal server error occurred."})
         self.assertNotIn("private data", response.get_data(as_text=True))

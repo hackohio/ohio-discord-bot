@@ -23,9 +23,11 @@ role_map = {
     "participant": config.discord_participant_role_id,
     "mentor": config.discord_mentor_role_id,
     "judge": config.discord_judge_role_id,
+    "sponsor": config.discord_sponsor_role_id,
     "verified": config.discord_verified_role_id,
     "all-access": config.discord_all_access_pass_role_id,
 }
+
 
 def generate_random_code(n):  # TESTED
     """
@@ -65,6 +67,8 @@ async def sync_user_roles(member: discord.Member):  # TESTED
     # Get the list of roles the user SHOULD have from the DB
     email = records.get_verified_email(member.id)
     should_have_names = records.get_user_roles(email)
+    if records.get_registration(email)["is_sponsor"]:
+        should_have_names.append("sponsor")
     should_have_names.append("verified")  # Always verified
 
     # All-Access-Pass if mentor or judge
@@ -263,7 +267,9 @@ class VerificationCog(commands.Cog):
             "No matter the outcome, you're learning, growing, and creating. That's a win!",
         }
         random_affirm = random.choice(list(affirmations))
-        await interaction.response.send_message(ephemeral=True, content=f"{random_affirm}")
+        await interaction.response.send_message(
+            ephemeral=True, content=f"{random_affirm}"
+        )
 
     @app_commands.guild_only()  # Makes sure no-one can verify over dm?
     @app_commands.describe(
@@ -273,7 +279,9 @@ class VerificationCog(commands.Cog):
         name="verify", description="Verify your Discord account for this Event"
     )
     @audit_command
-    async def verify(self, interaction: discord.Interaction, email_or_code: str):  # TESTED
+    async def verify(
+        self, interaction: discord.Interaction, email_or_code: str
+    ):  # TESTED
         """
         Verifies a user's Discord account by linking it with their reg email
 
@@ -392,4 +400,3 @@ class VerificationCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(VerificationCog(bot))
-
