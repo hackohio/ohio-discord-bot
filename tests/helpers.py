@@ -11,9 +11,7 @@ class DatabaseTestMixin:
     def setUp(self):
         super().setUp()
         self._database_directory = tempfile.TemporaryDirectory()
-        records._DATABASE_FILE = str(
-            Path(self._database_directory.name) / "records.db"
-        )
+        records._DATABASE_FILE = str(Path(self._database_directory.name) / "records.db")
         records._initialize_db()
 
     def tearDown(self):

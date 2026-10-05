@@ -8,7 +8,7 @@ with event intake workflows.
 ## What it does
 
 - Verifies registered attendees by email and assigns participant, mentor, judge,
-  verified, and all-access roles.
+  sponsor, verified, and all-access roles.
 - Lets participants create, manage, and inspect hackathon teams, including
   private team channels and roles.
 - Gives organizers commands for manual verification, team removal, channel
@@ -46,14 +46,27 @@ organization folder. It must define these sections and values:
 | `web`     | `port`, `api_key`                                              |
 | `email`   | `address`, `password`, `code_expiration_time`                  |
 
+The Discord role IDs must include `sponsor_role_id`.
+
 The webhook expects an `api-key` header that matches a configured key of at
 least 32 characters. Generate one with
 `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Its JSON body
-includes `email`, `first_name`, `last_name`, `is_capstone`, an optional
-`is_professional` boolean, and an optional comma-separated `roles` value. The
-category flags cannot both be true; omitted `is_professional` defaults to
-`false`. Role codes `1` and `2` map to judge and mentor, respectively. Deployed
-requests use HTTPS; the internal Waitress port is loopback-only.
+includes `email`, `first_name`, `last_name`, `is_capstone`, optional
+`is_professional` and `is_sponsor` booleans, and an optional comma-separated
+`roles` value. The category flags cannot both be true; omitted optional booleans
+default to `false`. Role codes `1` and `2` map to judge and mentor, respectively.
+The bot needs Manage Roles permission, and its highest role must be above the
+sponsor role. CSV imports accept optional `Capstone Team`, `is_professional`,
+and `is_sponsor` columns with `Yes` or `No` values. Missing or blank values
+preserve the existing database flags; new registrations default to `false`.
+Capstone and professional cannot both be true, so switching categories requires
+an explicit `No` for the previous category. `/overify` accepts optional
+`is_capstone`, `is_professional`, and `is_sponsor` flags: omit them to preserve
+existing status, or supply `true` or `false` to update them, including for
+already-verified users. New registrations default to `false`. The database
+upsert overwrites supplied values; CSV and `/overify` resolve omitted flags
+before calling it, while webhook resubmissions overwrite existing flags.
+Deployed requests use HTTPS; the internal Waitress port is loopback-only.
 
 ## Project layout
 

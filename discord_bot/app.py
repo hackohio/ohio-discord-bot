@@ -13,6 +13,7 @@ from logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
+
 def _set_readiness(ready: bool):
     path = Path(config.discord_ready_file)
     if ready:

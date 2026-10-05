@@ -126,9 +126,7 @@ class LfgCog(commands.Cog):
         description = "\n\n".join(lines)
         remaining = len(present) - shown
         if remaining > 0:
-            description += (
-                f"\n\n_...and {remaining} more looking. The list will shrink as teams form._"
-            )
+            description += f"\n\n_...and {remaining} more looking. The list will shrink as teams form._"
 
         embed = create_embed(f"Looking for a Team ({len(present)})", description)
         await interaction.edit_original_response(embed=embed)

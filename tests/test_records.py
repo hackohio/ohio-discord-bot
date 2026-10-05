@@ -19,6 +19,7 @@ class RecordsTestCase(DatabaseTestCase):
         self.assertEqual(registration["first_name"], "Pat")
         self.assertEqual(registration["last_name"], "One")
         self.assertEqual(registration["is_capstone"], 1)
+        self.assertEqual(registration["is_sponsor"], 0)
         self.assertEqual(
             records.get_user_roles("person@example.com"),
             ["participant", "judge", "mentor"],
@@ -35,6 +36,7 @@ class RecordsTestCase(DatabaseTestCase):
                 "last_name": "Name",
                 "is_capstone": 0,
                 "is_professional": 0,
+                "is_sponsor": 0,
                 "is_participant": 0,
                 "is_judge": 0,
                 "is_mentor": 1,
@@ -131,9 +133,7 @@ class RecordsTestCase(DatabaseTestCase):
 
     def test_verified_lookup_removal_and_same_email_is_noop(self):
         self.add_verified(101, email="person@example.com", username="person#0001")
-        added = records.add_verified_user(
-            "person@example.com", 202, "replacement#0001"
-        )
+        added = records.add_verified_user("person@example.com", 202, "replacement#0001")
 
         self.assertFalse(added)
         self.assertEqual(records.get_verified_email(101), "person@example.com")
@@ -329,6 +329,10 @@ class RecordsTestCase(DatabaseTestCase):
                 """
             )
             connection.execute(
+                "INSERT INTO registration(email, first_name, last_name) VALUES (?, ?, ?)",
+                ("legacy@example.com", "Legacy", "Attendee"),
+            )
+            connection.execute(
                 """
                 CREATE TABLE teams (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -356,6 +360,43 @@ class RecordsTestCase(DatabaseTestCase):
                 for row in connection.execute("PRAGMA table_info(registration)")
             }
         self.assertIn("is_professional", registration_columns)
+        self.assertIn("is_sponsor", registration_columns)
+        legacy_registration = records.get_registration("legacy@example.com")
+        self.assertEqual(legacy_registration["first_name"], "Legacy")
+        self.assertEqual(legacy_registration["is_sponsor"], 0)
+
+    def test_sponsor_status_persists_on_insert_and_update_and_survives_role_updates(
+        self,
+    ):
+        records.add_registration(
+            "sponsor@example.com",
+            "Sam",
+            "Sponsor",
+            False,
+            ["participant"],
+            is_sponsor=True,
+        )
+        self.assertEqual(
+            records.get_registration("sponsor@example.com")["is_sponsor"], 1
+        )
+
+        records.add_registration(
+            "sponsor@example.com",
+            "Updated",
+            "Sponsor",
+            False,
+            ["mentor"],
+            is_sponsor=True,
+        )
+        records.update_roles("sponsor@example.com", ["judge"])
+        registration = records.get_registration("sponsor@example.com")
+        self.assertEqual(registration["is_sponsor"], 1)
+        self.assertEqual(records.get_user_roles("sponsor@example.com"), ["judge"])
+
+        records.add_registration(
+            "sponsor@example.com", "Updated", "Sponsor", False, ["judge"]
+        )
+        self.assertFalse(records.get_registration("sponsor@example.com")["is_sponsor"])
 
     def test_legacy_codes_table_gets_expiration_column(self):
         legacy_database = self._database_directory.name + "/legacy.db"

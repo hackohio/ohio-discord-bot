@@ -139,19 +139,25 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
 
     def test_can_join_team_validation_codes(self):
         unverified = make_member(999)
-        self.assertEqual(teams.can_join_team(unverified), teams.TeamJoinStatus.NOT_VERIFIED)
+        self.assertEqual(
+            teams.can_join_team(unverified), teams.TeamJoinStatus.NOT_VERIFIED
+        )
 
         staff = make_member(100)
         self.add_verified(
             100, email="staff@example.com", roles=["mentor"], username="staff#0001"
         )
-        self.assertEqual(teams.can_join_team(staff), teams.TeamJoinStatus.NOT_PARTICIPANT)
+        self.assertEqual(
+            teams.can_join_team(staff), teams.TeamJoinStatus.NOT_PARTICIPANT
+        )
 
         assigned = make_member(101)
         self.add_verified(101)
         team_id = records.create_team("Assigned", False, 201, 202, 203)
         records.join_team(101, team_id)
-        self.assertEqual(teams.can_join_team(assigned), teams.TeamJoinStatus.ALREADY_ON_TEAM)
+        self.assertEqual(
+            teams.can_join_team(assigned), teams.TeamJoinStatus.ALREADY_ON_TEAM
+        )
 
         members = {
             records.ParticipantCategory.CAPSTONE: make_member(102),
@@ -216,9 +222,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
 
         team_role = FakeRole(201)
         team_role.mention = "<@&201>"
-        text_channel = SimpleNamespace(
-            id=203, mention="#new-team", send=AsyncMock()
-        )
+        text_channel = SimpleNamespace(id=203, mention="#new-team", send=AsyncMock())
         voice_channel = SimpleNamespace(id=204)
         category = SimpleNamespace(
             id=202,
@@ -244,7 +248,9 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         interaction = make_interaction(creator, guild)
         cog = teams.TeamsCog(SimpleNamespace())
 
-        await teams.TeamsCog.create_team.callback(cog, interaction, "New Team", teammate)
+        await teams.TeamsCog.create_team.callback(
+            cog, interaction, "New Team", teammate
+        )
 
         embed = interaction.edit_original_response.call_args.kwargs["embed"]
         self.assertIn("Team created", embed.title)
@@ -365,7 +371,9 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         interaction = make_interaction(creator, guild)
         cog = teams.TeamsCog(SimpleNamespace())
 
-        await teams.TeamsCog.create_team.callback(cog, interaction, "New Team", teammate)
+        await teams.TeamsCog.create_team.callback(
+            cog, interaction, "New Team", teammate
+        )
 
         team_role.delete.assert_awaited_once()
         self.assertIn(
@@ -440,7 +448,9 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_lfg_view_filters_absent_members_and_formats_skills(self):
         self.add_verified(500)
-        records.add_registration("alice@example.com", "Alice", "One", False, ["participant"])
+        records.add_registration(
+            "alice@example.com", "Alice", "One", False, ["participant"]
+        )
         records.add_verified_user("alice@example.com", 101, "alice#0001")
         self.add_verified(102)
         records.add_registration(
@@ -514,12 +524,16 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             records.add_to_lfg(member_id, "x" * 150)
 
         guild = FakeGuild(
-            members={member_id: make_member(member_id) for member_id in range(100, 130)},
+            members={
+                member_id: make_member(member_id) for member_id in range(100, 130)
+            },
         )
         interaction = make_interaction(make_member(500), guild)
         await lfg_view_callback(self.lfg_cog, interaction)
 
-        description = interaction.edit_original_response.call_args.kwargs["embed"].description
+        description = interaction.edit_original_response.call_args.kwargs[
+            "embed"
+        ].description
         self.assertIn("...and", description)
         self.assertLess(description.count("> " + "x" * 150), 30)
         self.assert_deferred_response(interaction)
@@ -540,7 +554,9 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             email="person@example.com",
             roles=["participant", "mentor"],
         )
-        roles = {role_id: FakeRole(role_id) for role_id in verification.role_map.values()}
+        roles = {
+            role_id: FakeRole(role_id) for role_id in verification.role_map.values()
+        }
         guild = FakeGuild(roles=roles)
         member = make_member(member_id, guild)
         member.roles = [roles[config.discord_judge_role_id]]
@@ -553,7 +569,9 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             roles[config.discord_verified_role_id],
             roles[config.discord_all_access_pass_role_id],
         )
-        member.remove_roles.assert_awaited_once_with(roles[config.discord_judge_role_id])
+        member.remove_roles.assert_awaited_once_with(
+            roles[config.discord_judge_role_id]
+        )
 
         member.add_roles.reset_mock()
         member.remove_roles.reset_mock()
@@ -566,6 +584,56 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         await verification.sync_user_roles(member)
         member.add_roles.assert_not_awaited()
         member.remove_roles.assert_not_awaited()
+
+    async def test_sponsor_role_is_additive_and_does_not_grant_all_access(self):
+        for discord_id, email, sponsor, roles in (
+            (301, "sponsor@example.com", True, ["participant"]),
+            (302, "regular@example.com", False, ["participant"]),
+            (303, "sponsor-only@example.com", True, []),
+        ):
+            records.add_registration(
+                email,
+                "Test",
+                "User",
+                False,
+                roles,
+                is_sponsor=sponsor,
+            )
+            records.add_verified_user(email, discord_id, f"user-{discord_id}")
+
+        guild_roles = {
+            role_id: FakeRole(role_id) for role_id in verification.role_map.values()
+        }
+        guild = FakeGuild(roles=guild_roles)
+        sponsor_member = make_member(301, guild)
+        await verification.sync_user_roles(sponsor_member)
+        sponsor_member.add_roles.assert_awaited_once_with(
+            guild_roles[config.discord_participant_role_id],
+            guild_roles[config.discord_sponsor_role_id],
+            guild_roles[config.discord_verified_role_id],
+        )
+
+        regular_member = make_member(302, guild)
+        await verification.sync_user_roles(regular_member)
+        regular_member.add_roles.assert_awaited_once_with(
+            guild_roles[config.discord_participant_role_id],
+            guild_roles[config.discord_verified_role_id],
+        )
+
+        sponsor_only = make_member(303, guild)
+        await verification.sync_user_roles(sponsor_only)
+        sponsor_only.add_roles.assert_awaited_once_with(
+            guild_roles[config.discord_sponsor_role_id],
+            guild_roles[config.discord_verified_role_id],
+        )
+        sponsor_registration = records.get_registration("sponsor-only@example.com")
+        self.assertEqual(
+            records.get_category(
+                sponsor_registration["is_capstone"],
+                sponsor_registration["is_professional"],
+            ),
+            "standard",
+        )
 
     async def test_sync_user_roles_skips_missing_roles_and_unverified_members(self):
         self.add_verified(101)
@@ -778,9 +846,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(records.get_team(team_id)["grace_period"])
 
     async def test_cleanup_rechecks_team_after_deletion_dm(self):
-        team_id, guild, members, _ = self.make_team(
-            [101], lead=101, grace_period=99.0
-        )
+        team_id, guild, members, _ = self.make_team([101], lead=101, grace_period=99.0)
         self.add_verified(102)
 
         def recover_team(*args, **kwargs):
@@ -796,9 +862,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         guild.get_role(201).delete.assert_not_awaited()
 
     async def test_cleanup_rechecks_extended_deadline_after_deletion_dm(self):
-        team_id, guild, members, _ = self.make_team(
-            [101], lead=101, grace_period=99.0
-        )
+        team_id, guild, members, _ = self.make_team([101], lead=101, grace_period=99.0)
         members[101].send.side_effect = lambda **kwargs: records.set_grace_period(
             team_id, 200.0
         )
@@ -855,9 +919,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(team["grace_period"])
 
     async def test_failed_cleanup_remains_eligible_for_retry(self):
-        team_id, guild, members, _ = self.make_team(
-            [101], lead=101, grace_period=99.0
-        )
+        team_id, guild, members, _ = self.make_team([101], lead=101, grace_period=99.0)
         members[101].remove_roles.side_effect = OSError("Discord unavailable")
 
         await self.run_grace_period_cleanup(guild)
@@ -909,12 +971,14 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
                 "Person",
                 "mentor",
                 is_capstone=True,
+                is_sponsor=True,
             )
 
         registration = records.get_registration("attendee@example.com")
         self.assertEqual(registration["first_name"], "Different")
         self.assertEqual(registration["last_name"], "Person")
         self.assertEqual(registration["is_capstone"], 1)
+        self.assertEqual(registration["is_sponsor"], 1)
         self.assertEqual(records.get_user_roles("attendee@example.com"), ["mentor"])
         self.assertFalse(records.is_verified(101))
         self.assertEqual(records.get_verified_email(target.id), "attendee@example.com")
@@ -945,6 +1009,139 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         registration = records.get_registration("attendee@example.com")
         self.assertFalse(registration["is_capstone"])
         self.assertFalse(registration["is_professional"])
+        self.assertFalse(registration["is_sponsor"])
+
+    async def test_overify_preserves_omitted_flags_and_applies_explicit_values(self):
+        from discord_bot.cogs import organizer
+
+        discord_id = 101
+        for verified in (False, True):
+            for flag in ("is_capstone", "is_professional", "is_sponsor"):
+                for initial, supplied, expected in (
+                    (True, None, True),
+                    (False, None, False),
+                    (False, True, True),
+                    (True, False, False),
+                ):
+                    with self.subTest(verified=verified, flag=flag, supplied=supplied):
+                        email = f"attendee{discord_id}@example.com"
+                        flags = dict.fromkeys(
+                            ("is_capstone", "is_professional", "is_sponsor"), False
+                        )
+                        flags[flag] = initial
+                        roles = (
+                            ["participant", "mentor"] if verified else ["participant"]
+                        )
+                        records.add_registration(
+                            email, "Stored", "Name", roles=roles, **flags
+                        )
+                        if verified:
+                            records.add_verified_user(
+                                email, discord_id, f"user-{discord_id}"
+                            )
+                        target = make_member(discord_id)
+                        interaction = make_interaction(make_member(999))
+                        options = {} if supplied is None else {flag: supplied}
+                        supplied_email = (
+                            "unrelated@example.com"
+                            if verified
+                            else f" {email.upper()} "
+                        )
+
+                        with patch.object(
+                            organizer, "sync_user_roles", new=AsyncMock()
+                        ) as sync_roles:
+                            await organizer.OrganizerCog.overify.callback(
+                                organizer.OrganizerCog(SimpleNamespace()),
+                                interaction,
+                                target,
+                                supplied_email,
+                                "Supplied",
+                                "Name",
+                                "participant",
+                                **options,
+                            )
+
+                        flags[flag] = expected
+                        registration = records.get_registration(email)
+                        for name, value in flags.items():
+                            self.assertEqual(registration[name], value)
+                        self.assertEqual(
+                            registration["first_name"],
+                            "Stored" if verified else "Supplied",
+                        )
+                        self.assertEqual(records.get_user_roles(email), roles)
+                        self.assertEqual(records.get_verified_email(discord_id), email)
+                        self.assertIsNone(
+                            records.get_registration("unrelated@example.com")
+                        )
+                        sync_roles.assert_awaited_once_with(target)
+                        discord_id += 1
+
+    async def test_overify_validates_preserved_categories_before_updating(self):
+        from discord_bot.cogs import organizer
+
+        for verified in (False, True):
+            with self.subTest(verified=verified):
+                discord_id = 401 + int(verified)
+                email = f"professional{discord_id}@example.com"
+                records.add_registration(
+                    email,
+                    "Test",
+                    "User",
+                    False,
+                    ["participant"],
+                    is_professional=True,
+                    is_sponsor=True,
+                )
+                if verified:
+                    records.add_verified_user(email, discord_id, f"user-{discord_id}")
+                before = records.get_registration(email)
+                target = make_member(discord_id)
+                interaction = make_interaction(make_member(999))
+                cog = organizer.OrganizerCog(SimpleNamespace())
+
+                with patch.object(
+                    organizer, "sync_user_roles", new=AsyncMock()
+                ) as sync_roles:
+                    await organizer.OrganizerCog.overify.callback(
+                        cog,
+                        interaction,
+                        target,
+                        email,
+                        "Test",
+                        "User",
+                        "judge",
+                        is_capstone=True,
+                    )
+                    self.assertEqual(records.get_registration(email), before)
+                    self.assertEqual(records.is_verified(discord_id), verified)
+                    sync_roles.assert_not_awaited()
+                    self.assertIn(
+                        "cannot both be true",
+                        interaction.edit_original_response.call_args.kwargs["content"],
+                    )
+
+                    await organizer.OrganizerCog.overify.callback(
+                        cog,
+                        interaction,
+                        target,
+                        email,
+                        "Test",
+                        "User",
+                        "judge",
+                        is_capstone=True,
+                        is_professional=False,
+                    )
+                    registration = records.get_registration(email)
+                    self.assertTrue(registration["is_capstone"])
+                    self.assertFalse(registration["is_professional"])
+                    self.assertTrue(registration["is_sponsor"])
+                    self.assertEqual(
+                        records.get_user_roles(email),
+                        ["participant", "judge"] if verified else ["judge"],
+                    )
+                    sync_roles.assert_awaited_once_with(target)
 
     async def test_organizer_removal_stays_immediate(self):
         from discord_bot.cogs import organizer
@@ -1030,11 +1227,12 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         try:
             load_extension = AsyncMock()
             sync = AsyncMock(return_value=[])
-            with patch.object(bot, "load_extension", new=load_extension), patch.object(
-                bot.tree, "clear_commands"
-            ) as clear_commands, patch.object(
-                bot.tree, "copy_global_to"
-            ) as copy_global_to, patch.object(bot.tree, "sync", new=sync):
+            with (
+                patch.object(bot, "load_extension", new=load_extension),
+                patch.object(bot.tree, "clear_commands") as clear_commands,
+                patch.object(bot.tree, "copy_global_to") as copy_global_to,
+                patch.object(bot.tree, "sync", new=sync),
+            ):
                 await bot.setup_hook()
 
             self.assertEqual(load_extension.await_count, len(EXTENSIONS))
@@ -1046,12 +1244,16 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         finally:
             await bot.close()
 
-    async def test_bot_readiness_requires_configured_guild_and_clears_on_disconnect(self):
+    async def test_bot_readiness_requires_configured_guild_and_clears_on_disconnect(
+        self,
+    ):
         bot = OhioBot()
         ready_file = Path(self._database_directory.name) / "discord-ready"
         bot._connection.user = SimpleNamespace(id=123, name="bot")
         try:
-            with patch.object(config, "discord_ready_file", str(ready_file), create=True):
+            with patch.object(
+                config, "discord_ready_file", str(ready_file), create=True
+            ):
                 with patch.object(bot, "get_guild", return_value=None):
                     await bot.on_ready()
                 self.assertFalse(ready_file.exists())
@@ -1075,14 +1277,16 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             initial = make_interaction(make_member(101))
             await bot._send_safe_error_response(initial)
             initial.response.send_message.assert_awaited_once_with(
-                content="Something went wrong while processing that command.", ephemeral=True
+                content="Something went wrong while processing that command.",
+                ephemeral=True,
             )
             initial.followup.send.assert_not_awaited()
 
             followup = make_interaction(make_member(101), response_done=True)
             await bot._send_safe_error_response(followup)
             followup.followup.send.assert_awaited_once_with(
-                content="Something went wrong while processing that command.", ephemeral=True
+                content="Something went wrong while processing that command.",
+                ephemeral=True,
             )
             followup.response.send_message.assert_not_awaited()
         finally:
@@ -1117,9 +1321,7 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
     async def test_verify_terminal_paths_edit_original_response(self):
         self.add_verified(101, email="verified@example.com")
         already_verified = make_interaction(make_member(101))
-        await verification_callback(
-            self.verification_cog, already_verified, "ignored"
-        )
+        await verification_callback(self.verification_cog, already_verified, "ignored")
         self.assertIn(
             "already verified",
             already_verified.edit_original_response.call_args.kwargs["content"],
@@ -1207,7 +1409,9 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         )
         interaction = make_interaction(user, guild)
 
-        with patch.object(verification, "sync_user_roles", new=AsyncMock()) as sync_roles:
+        with patch.object(
+            verification, "sync_user_roles", new=AsyncMock()
+        ) as sync_roles:
             await verification_callback(self.verification_cog, interaction, "123456")
 
         self.assertTrue(records.is_verified(101))
@@ -1282,7 +1486,9 @@ class BotHelperTestCase(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
             order.append("unrelated_work")
             release_smtp.set()
 
-        with patch.object(verification.smtplib, "SMTP_SSL", return_value=BlockingSMTP()):
+        with patch.object(
+            verification.smtplib, "SMTP_SSL", return_value=BlockingSMTP()
+        ):
             sent, _ = await asyncio.gather(
                 verification.send_verification_email(
                     "person@example.com", "123456", "person#0001"
