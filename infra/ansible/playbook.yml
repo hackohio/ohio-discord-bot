@@ -1,7 +1,10 @@
 # Turns a blank Ubuntu Lightsail server into a running bot.
 # The "Start bot" GitHub workflow runs this; it can also be run by hand from
 # Linux/WSL:
-#   CONFIG_INI="$(cat config.ini)" ansible-playbook -i inventory.ini playbook.yml -e web_port=5000 -e public_ip=203.0.113.10
+#   CONFIG_INI="$(cat config.ini)" AWS_REGION=us-east-2 \
+#   CW_AGENT_ACCESS_KEY_ID=... CW_AGENT_SECRET_ACCESS_KEY=... \
+#   ansible-playbook -i inventory.ini playbook.yml -e instance_name=ohio-discord-bot-hackohio-2026 \
+#   -e web_port=5000 -e public_ip=203.0.113.10
 
 - name: Deploy OHI/O Discord bot
   hosts: bot
@@ -17,6 +20,10 @@
     caddy_version: "2.11.4" # includes public IP certificate support
     web_port: 5000
     public_ip: ""
+    instance_name: ""
+    aws_region: "{{ lookup('ansible.builtin.env', 'AWS_REGION') }}"
+    cloudwatch_agent_access_key_id: "{{ lookup('ansible.builtin.env', 'CW_AGENT_ACCESS_KEY_ID') }}"
+    cloudwatch_agent_secret_access_key: "{{ lookup('ansible.builtin.env', 'CW_AGENT_SECRET_ACCESS_KEY') }}"
     config_ini: "{{ lookup('ansible.builtin.env', 'CONFIG_INI') }}"
     restore_db_file: "" # path on the machine running Ansible; empty = start with a fresh database
 
@@ -36,7 +43,11 @@
         that:
           - config_ini | length > 0
           - public_ip | length > 0
-        fail_msg: CONFIG_INI and public_ip are required deployment inputs.
+          - instance_name | length > 0
+          - aws_region | length > 0
+          - cloudwatch_agent_access_key_id | length > 0
+          - cloudwatch_agent_secret_access_key | length > 0
+        fail_msg: CONFIG_INI, public_ip, instance_name, AWS_REGION, and CloudWatch Agent credentials are required.
         quiet: true
 
   tasks:
@@ -61,6 +72,84 @@
         name: [git, acl, sqlite3, ca-certificates, python3-debian]
         update_cache: true
         lock_timeout: 300 # first boot often runs unattended-upgrades, which holds the apt lock
+
+    - name: Preserve the metric hostname across reboots
+      ansible.builtin.lineinfile:
+        path: /etc/cloud/cloud.cfg
+        regexp: '^preserve_hostname:'
+        line: 'preserve_hostname: true'
+
+    - name: Set stable hostname for CloudWatch metric dimensions
+      ansible.builtin.hostname:
+        name: "{{ instance_name }}"
+
+    - name: Download CloudWatch Agent
+      ansible.builtin.get_url:
+        url: https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+        dest: /tmp/amazon-cloudwatch-agent.deb
+        mode: "0644"
+
+    - name: Install CloudWatch Agent
+      ansible.builtin.apt:
+        deb: /tmp/amazon-cloudwatch-agent.deb
+        state: present
+        lock_timeout: 300
+
+    - name: Remove CloudWatch Agent package download
+      ansible.builtin.file:
+        path: /tmp/amazon-cloudwatch-agent.deb
+        state: absent
+
+    - name: Create root AWS credentials directory
+      ansible.builtin.file:
+        path: /root/.aws
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Install CloudWatch Agent credentials
+      ansible.builtin.copy:
+        content: |
+          [AmazonCloudWatchAgent]
+          aws_access_key_id = {{ cloudwatch_agent_access_key_id }}
+          aws_secret_access_key = {{ cloudwatch_agent_secret_access_key }}
+        dest: /root/.aws/credentials
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Configure CloudWatch Agent credentials
+      ansible.builtin.copy:
+        content: |
+          [credentials]
+          shared_credential_profile = "AmazonCloudWatchAgent"
+          shared_credential_file = "/root/.aws/credentials"
+        dest: /opt/aws/amazon-cloudwatch-agent/etc/common-config.toml
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Configure CloudWatch Agent metrics
+      ansible.builtin.template:
+        src: templates/cloudwatch-agent.json.j2
+        dest: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Configure and start CloudWatch Agent
+      ansible.builtin.command: >-
+        /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl
+        -a fetch-config -m onPremise
+        -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
+
+    - name: Ensure CloudWatch Agent is enabled and running
+      ansible.builtin.systemd_service:
+        name: amazon-cloudwatch-agent
+        enabled: true
+        state: started
 
     - name: Add the official Caddy package repository
       ansible.builtin.deb822_repository:

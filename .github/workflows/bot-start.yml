@@ -98,8 +98,31 @@ jobs:
         working-directory: infra/terraform
         env:
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
         run: |
-          terraform apply -auto-approve
+          if [ -z "$ALERT_EMAIL" ]; then
+            echo "::error::The repository ALERT_EMAIL secret is required for monitoring alerts."
+            exit 1
+          fi
+
+          contact_endpoint="$(aws lightsail get-contact-methods --protocol Email --query 'contactMethods[0].contactEndpoint' --output text)"
+          if [ "$contact_endpoint" = "None" ]; then
+            aws lightsail create-contact-method --protocol Email --contact-endpoint "$ALERT_EMAIL"
+            echo "Lightsail email verification sent."
+          elif [ "$contact_endpoint" != "$ALERT_EMAIL" ]; then
+            echo "::error::A different Lightsail email contact is already configured in this region. Update it before deploying."
+            exit 1
+          fi
+
+          TF_VAR_alert_email="$ALERT_EMAIL" terraform apply -auto-approve
+
+          agent_access_key="$(terraform output -raw cloudwatch_agent_access_key_id)"
+          agent_secret_key="$(terraform output -raw cloudwatch_agent_secret_access_key)"
+          echo "::add-mask::$agent_access_key"
+          echo "::add-mask::$agent_secret_key"
+          printf 'CW_AGENT_ACCESS_KEY_ID=%s\nCW_AGENT_SECRET_ACCESS_KEY=%s\n' \
+            "$agent_access_key" "$agent_secret_key" >> "$GITHUB_ENV"
+
           instance_name="$TF_VAR_instance_name"
           state="$(aws lightsail get-instance-state --instance-name "$instance_name" --query 'state.name' --output text)"
           if [ "$state" = "stopped" ]; then
@@ -147,6 +170,7 @@ jobs:
           ansible-playbook -i inventory.ini playbook.yml \
             -e "repo_url=https://github.com/${GITHUB_REPOSITORY}.git" \
             -e "repo_ref=${REPO_REF}" \
+            -e "instance_name=${TF_VAR_instance_name}" \
             -e "web_port=${WEB_PORT}" \
             -e "public_ip=${BOT_IP}" \
             -e "restore_db_file=${RESTORE_DB_FILE:-}"
@@ -195,6 +219,7 @@ jobs:
 
           Update the registration system to send to the webhook URL above (it changes every deploy).
 
+          Confirm the Lightsail contact and SNS subscription emails before relying on alerts.
           Run the **Stop bot** workflow to shut down the server while preserving its data.
           EOF
 

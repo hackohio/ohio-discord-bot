@@ -6,19 +6,19 @@ buttons in the GitHub **Actions** tab manage an independent deployment for each 
 | Workflow | What it does |
 |---|---|
 | **Start bot** | Creates a small AWS Lightsail server, installs the bot, starts it, and prints the webhook URL. |
-| **Stop bot** | Saves `records.db` to S3 (optional), then deletes the server so billing stops. |
+| **Stop bot** | Stops the Lightsail server while preserving the instance and its data. |
 
 ```
-Start bot:  GitHub Actions ──terraform apply──▶ event's Lightsail server ──ansible──▶ bot running
-Stop bot:   GitHub Actions ──copy records.db──▶ event's S3 prefix ──terraform destroy──▶ server gone
+Start bot:  GitHub Actions ──terraform apply──▶ event's Lightsail server ──ansible──▶ bot running + monitored
+Stop bot:   GitHub Actions ──stop instance──▶ server stopped, data and Terraform state preserved
 ```
 
 **What's in this folder**
 
 | Path | Purpose |
 |---|---|
-| `terraform/` | Describes the server: Lightsail instance, SSH key, firewall. |
-| `ansible/` | Describes what goes *on* the server: uv, the bot code, `config.ini`, a systemd service. |
+| `terraform/` | Describes the server, alarms, SNS alerts, and least-privilege metrics publisher. |
+| `ansible/` | Describes what goes *on* the server: CloudWatch Agent, uv, bot code, `config.ini`, and systemd services. |
 | `bootstrap/` | One-time creation of the two S3 buckets (Terraform state + database backups). |
 | `../.github/workflows/bot-start.yml`, `bot-stop.yml` | The two buttons. |
 | `../.github/workflows/infra-checks.yml` | Validates the Terraform/Ansible files on every PR. |
@@ -27,8 +27,11 @@ Each event gets its own Terraform state, Lightsail server, configuration, databa
 backup prefix, and webhook URL. The state and backup S3 buckets are shared safely.
 
 **Cost:** each `nano` Lightsail server is about $5/month, billed by the hour, so a
-weekend event costs well under $1. The S3 buckets cost a few cents a month.
-Nothing else is billed while all bots are stopped.
+weekend event costs well under $1. The S3 buckets cost a few cents a month. The
+RAM/disk custom metrics and two CloudWatch alarms are roughly $0.80/month before
+free allowances while monitoring resources exist; Lightsail alarms and low-volume
+SNS email are negligible. Stopping a bot does not remove its alarms or Terraform
+state. Check current account pricing/free-tier usage before applying.
 
 ---
 
@@ -58,7 +61,7 @@ The names must match exactly, because the workflows compute them from the accoun
 
 ### 2. Create a deploy user for GitHub
 
-In **IAM → Policies → Create policy → JSON**, paste this (replace `ACCOUNT_ID` in 4 places)
+In **IAM → Policies → Create policy → JSON**, paste this (replace `ACCOUNT_ID` everywhere)
 and name it `ohio-discord-bot-deploy`:
 
 ```json
@@ -67,6 +70,36 @@ and name it `ohio-discord-bot-deploy`:
   "Statement": [
     { "Sid": "Lightsail", "Effect": "Allow", "Action": "lightsail:*", "Resource": "*" },
     { "Sid": "WhoAmI", "Effect": "Allow", "Action": "sts:GetCallerIdentity", "Resource": "*" },
+    {
+      "Sid": "CloudWatchAgentUser",
+      "Effect": "Allow",
+      "Action": ["iam:CreateUser", "iam:DeleteUser", "iam:GetUser", "iam:CreateAccessKey", "iam:DeleteAccessKey", "iam:ListAccessKeys", "iam:PutUserPolicy", "iam:GetUserPolicy", "iam:DeleteUserPolicy", "iam:ListUserPolicies"],
+      "Resource": "arn:aws:iam::ACCOUNT_ID:user/ohio-discord-bot-*-cloudwatch-agent"
+    },
+    {
+      "Sid": "CloudControlLightsailAlarms",
+      "Effect": "Allow",
+      "Action": ["cloudcontrol:CreateResource", "cloudcontrol:DeleteResource", "cloudcontrol:GetResource", "cloudcontrol:GetResourceRequestStatus", "cloudcontrol:ListResources", "cloudcontrol:UpdateResource", "cloudcontrol:CancelResourceRequest"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudWatchAlarms",
+      "Effect": "Allow",
+      "Action": ["cloudwatch:PutMetricAlarm", "cloudwatch:DeleteAlarms", "cloudwatch:DescribeAlarms"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AlertTopics",
+      "Effect": "Allow",
+      "Action": ["sns:CreateTopic", "sns:DeleteTopic", "sns:GetTopicAttributes", "sns:SetTopicAttributes", "sns:Subscribe", "sns:ListSubscriptionsByTopic"],
+      "Resource": "arn:aws:sns:us-east-2:ACCOUNT_ID:ohio-discord-bot-*-alerts"
+    },
+    {
+      "Sid": "AlertSubscriptions",
+      "Effect": "Allow",
+      "Action": ["sns:Unsubscribe", "sns:GetSubscriptionAttributes", "sns:SetSubscriptionAttributes"],
+      "Resource": "arn:aws:sns:us-east-2:ACCOUNT_ID:ohio-discord-bot-*-alerts:*"
+    },
     {
       "Sid": "ListBuckets",
       "Effect": "Allow",
@@ -116,6 +149,7 @@ In the repo, go to **Settings → Secrets and variables → Actions → New repo
 | `AWS_SECRET_ACCESS_KEY` | from step 2 |
 | `SSH_PRIVATE_KEY` | entire contents of `ohio-bot-deploy`, including the `-----BEGIN/END-----` lines |
 | `SSH_PUBLIC_KEY` | contents of `ohio-bot-deploy.pub` |
+| `ALERT_EMAIL` | address to receive monitoring alerts; leave it out of the repository |
 
 Then go to **Settings → Environments** and create one environment per event. Use a
 short lowercase name containing only letters, numbers, and hyphens, such as
@@ -133,6 +167,14 @@ The workflows present these environments as the event choices. Delete any old
 repository-level `CONFIG_INI` secret so a missing environment secret cannot silently
 fall back to the wrong event's configuration. To change one event's config, update
 its `CONFIG_INI` secret and run **Start bot** for that event again.
+
+The first **Start bot** run creates an account/region-wide Lightsail email contact
+(idempotently via the Lightsail API; Terraform has no contact-method resource) and a
+per-event SNS subscription. A different existing Lightsail contact must be changed
+manually. Confirm both verification emails before relying on alerts. The SNS recipient and IAM publisher key are stored in that event's
+encrypted Terraform state; the key is installed root-only on the instance and only
+has permission to publish the `HackOHIO/Lightsail` namespace. The state-managed key
+is long-lived until that event's resources are destroyed.
 
 ---
 
@@ -157,8 +199,9 @@ curl -i -X POST https://<SERVER_IP>/post/user -H "api-key: wrong" -H "Content-Ty
 For outage and certificate alerts, configure an external monitor to request
 `https://<SERVER_IP>/health` every five minutes and alert unless it receives
 HTTP `200` with `{"status":"ready"}`. The endpoint returns HTTP `503` until
-Discord login and command synchronization complete. Update the monitor whenever
-the workflow reports a new server IP.
+Discord login and command synchronization complete. This external check covers bot
+readiness; AWS alarms separately cover CPU, burst capacity, Lightsail status, RAM,
+and root-disk usage. Update the monitor whenever the workflow reports a new server IP.
 
 ### Stop
 
