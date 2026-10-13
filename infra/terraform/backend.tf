@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    awscc = {
+      source  = "hashicorp/awscc"
+      version = "~> 1.0"
+    }
   }
 
   # State lives in S3 so every GitHub Actions run (which starts on a blank
@@ -19,5 +23,9 @@ terraform {
 }
 
 provider "aws" {
+  region = var.region
+}
+
+provider "awscc" {
   region = var.region
 }
