@@ -149,12 +149,8 @@ jobs:
       - name: Download database backup
         if: inputs.restore_db
         run: |
-          if aws s3api head-object --bucket "$BACKUP_BUCKET" --key "${EVENT}/latest.db" > /dev/null 2>&1; then
-            aws s3 cp "s3://${BACKUP_BUCKET}/${EVENT}/latest.db" "$RUNNER_TEMP/records.db"
-            echo "RESTORE_DB_FILE=$RUNNER_TEMP/records.db" >> "$GITHUB_ENV"
-          else
-            echo "::warning::No backup found in s3://${BACKUP_BUCKET}/${EVENT}/latest.db. Starting with a fresh database."
-          fi
+          aws s3 cp "s3://${BACKUP_BUCKET}/${EVENT}/latest.db" "$RUNNER_TEMP/records.db"
+          echo "RESTORE_DB_FILE=$RUNNER_TEMP/records.db" >> "$GITHUB_ENV"
 
       # GitHub's Ubuntu runners come with Ansible preinstalled; only install if it's missing.
       - name: Install Ansible
