@@ -6,12 +6,12 @@
   "metrics": {
     "namespace": "HackOHIO/Lightsail",
     "aggregation_dimensions": [["host"]],
-    "drop_original_metrics": ["disk_used_percent"],
     "metrics_collected": {
       "mem": {
         "measurement": ["mem_available"]
       },
       "disk": {
+        "drop_original_metrics": ["disk_used_percent"],
         "resources": ["/"],
         "measurement": ["used_percent"]
       }

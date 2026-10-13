@@ -114,6 +114,7 @@
           [AmazonCloudWatchAgent]
           aws_access_key_id = {{ cloudwatch_agent_access_key_id }}
           aws_secret_access_key = {{ cloudwatch_agent_secret_access_key }}
+          region = {{ aws_region }}
         dest: /root/.aws/credentials
         owner: root
         group: root

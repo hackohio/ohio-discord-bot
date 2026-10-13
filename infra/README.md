@@ -73,32 +73,32 @@ and name it `ohio-discord-bot-deploy`:
     {
       "Sid": "CloudWatchAgentUser",
       "Effect": "Allow",
-      "Action": ["iam:CreateUser", "iam:DeleteUser", "iam:GetUser", "iam:CreateAccessKey", "iam:DeleteAccessKey", "iam:ListAccessKeys", "iam:PutUserPolicy", "iam:GetUserPolicy", "iam:DeleteUserPolicy", "iam:ListUserPolicies"],
+      "Action": ["iam:CreateUser", "iam:DeleteUser", "iam:GetUser", "iam:UpdateUser", "iam:CreateAccessKey", "iam:DeleteAccessKey", "iam:ListAccessKeys", "iam:UpdateAccessKey", "iam:PutUserPolicy", "iam:GetUserPolicy", "iam:DeleteUserPolicy", "iam:ListGroupsForUser"],
       "Resource": "arn:aws:iam::ACCOUNT_ID:user/ohio-discord-bot-*-cloudwatch-agent"
     },
     {
       "Sid": "CloudControlLightsailAlarms",
       "Effect": "Allow",
-      "Action": ["cloudcontrol:CreateResource", "cloudcontrol:DeleteResource", "cloudcontrol:GetResource", "cloudcontrol:GetResourceRequestStatus", "cloudcontrol:ListResources", "cloudcontrol:UpdateResource", "cloudcontrol:CancelResourceRequest"],
+      "Action": ["cloudformation:CreateResource", "cloudformation:DeleteResource", "cloudformation:GetResource", "cloudformation:GetResourceRequestStatus", "cloudformation:ListResources", "cloudformation:UpdateResource", "cloudformation:CancelResourceRequest"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudWatchAlarmRead",
+      "Effect": "Allow",
+      "Action": "cloudwatch:DescribeAlarms",
       "Resource": "*"
     },
     {
       "Sid": "CloudWatchAlarms",
       "Effect": "Allow",
-      "Action": ["cloudwatch:PutMetricAlarm", "cloudwatch:DeleteAlarms", "cloudwatch:DescribeAlarms"],
-      "Resource": "*"
+      "Action": ["cloudwatch:PutMetricAlarm", "cloudwatch:DeleteAlarms", "cloudwatch:ListTagsForResource"],
+      "Resource": "arn:aws:cloudwatch:us-east-2:ACCOUNT_ID:alarm:ohio-discord-bot-*"
     },
     {
-      "Sid": "AlertTopics",
+      "Sid": "Alerts",
       "Effect": "Allow",
-      "Action": ["sns:CreateTopic", "sns:DeleteTopic", "sns:GetTopicAttributes", "sns:SetTopicAttributes", "sns:Subscribe", "sns:ListSubscriptionsByTopic"],
+      "Action": ["sns:CreateTopic", "sns:DeleteTopic", "sns:GetTopicAttributes", "sns:SetTopicAttributes", "sns:Subscribe", "sns:ListSubscriptionsByTopic", "sns:Unsubscribe", "sns:GetSubscriptionAttributes", "sns:SetSubscriptionAttributes", "sns:ListTagsForResource"],
       "Resource": "arn:aws:sns:us-east-2:ACCOUNT_ID:ohio-discord-bot-*-alerts"
-    },
-    {
-      "Sid": "AlertSubscriptions",
-      "Effect": "Allow",
-      "Action": ["sns:Unsubscribe", "sns:GetSubscriptionAttributes", "sns:SetSubscriptionAttributes"],
-      "Resource": "arn:aws:sns:us-east-2:ACCOUNT_ID:ohio-discord-bot-*-alerts:*"
     },
     {
       "Sid": "ListBuckets",
@@ -186,7 +186,7 @@ is long-lived until that event's resources are destroyed.
 2. Select the event's GitHub environment.
 3. Leave `ref` as `main`, unless you want a different branch.
 4. Leave **Restore** unticked for a new event. Tick it only to use an existing
-   S3 backup for that event.
+   S3 backup for that event. The run fails if that backup cannot be downloaded.
 5. Wait about 5 minutes. The run's **Summary** page shows the server IP and **webhook URL**.
 6. Put the webhook URL into that event's registration/intake system. **It changes whenever its server is recreated.**
 
