@@ -751,4 +751,15 @@ def get_lfg_list() -> list:
         return [dict(row) for row in rows]
 
 
+def stats() -> list:
+    with _get_connection() as conn:
+        #Total Teams
+        team_count = conn.execute(f"""SELECT COUNT(*) FROM {_TEAM_TABLE_NAME}""").fetchone()[0]
+        #Total Verified Participants
+        prtcpnt_count = conn.execute(f"""SELECT COUNT(*) FROM {_VERIFIED_TABLE_NAME}""").fetchone()[0]
+        #Current LFG count
+        lfg_count = conn.execute(f"""SELECT COUNT(*) FROM {_LFG_TABLE_NAME}""").fetchone()[0]
+        
+        return [team_count, prtcpnt_count, lfg_count]
+
 _initialize_db()
