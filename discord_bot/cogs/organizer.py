@@ -32,6 +32,26 @@ class OrganizerCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.check(_is_administrator_or_organizer)
     @app_commands.command(
+        name="stats",
+        description="Displays team, LFG, and verified participant counts (Organizers only)",
+    )
+    @audit_command
+    async def stats(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        team_count, participant_count, lfg_count = records.stats()
+        embed = create_embed(
+            title="Server Statistics",
+            description="Here are some statistics for the server:",
+        )
+        embed.add_field(name="Total Teams: ", value=team_count)
+        embed.add_field(name="Verified Participants: ", value=participant_count)
+        embed.add_field(name="Participants looking for a group: ", value=lfg_count)
+        await interaction.edit_original_response(embed=embed)
+
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(_is_administrator_or_organizer)
+    @app_commands.command(
         name="overify",
         description="Manually verify a Discord account for this event (Organizers only)",
     )
