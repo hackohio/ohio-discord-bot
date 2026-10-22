@@ -842,4 +842,25 @@ def get_lfg_list(category: ParticipantCategory) -> list:
         return [dict(row) for row in rows]
 
 
+def stats() -> list:
+    """Return team, verified-participant, and looking-for-group counts."""
+    with _get_connection() as conn:
+        team_count = conn.execute(
+            f"SELECT COUNT(*) FROM {_TEAM_TABLE_NAME}"
+        ).fetchone()[0]
+        participant_count = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {_VERIFIED_TABLE_NAME} v
+            JOIN {_REG_TABLE_NAME} r ON v.email = r.email
+            WHERE r.is_participant = 1
+            """
+        ).fetchone()[0]
+        lfg_count = conn.execute(
+            f"SELECT COUNT(*) FROM {_LFG_TABLE_NAME}"
+        ).fetchone()[0]
+
+        return [team_count, participant_count, lfg_count]
+
+
 _initialize_db()
