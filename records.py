@@ -3,6 +3,7 @@ import os
 import sqlite3
 import threading
 import time
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,36 @@ _CODE_TABLE_NAME = "codes"
 _CATEGORY_BUCKET_NAME = "category_bucket"
 _LFG_TABLE_NAME = "lfg_pool"
 
+
+class ParticipantCategory(StrEnum):
+    STANDARD = "standard"
+    CAPSTONE = "capstone"
+    PROFESSIONAL = "professional"
+
+
+def get_category(
+    is_capstone: bool, is_professional: bool = False
+) -> ParticipantCategory:
+    """Return the mutually exclusive participant category for two flags."""
+    if is_capstone and is_professional:
+        raise ValueError("is_capstone and is_professional cannot both be true")
+    if is_capstone:
+        return ParticipantCategory.CAPSTONE
+    if is_professional:
+        return ParticipantCategory.PROFESSIONAL
+    return ParticipantCategory.STANDARD
+
+
+def get_verified_category(identifier) -> ParticipantCategory:
+    user = get_verified_user(identifier)
+    return get_category(user["is_capstone"], user["is_professional"])
+
+
+def get_team_category(identifier) -> ParticipantCategory:
+    team = get_team(identifier)
+    return get_category(team["is_capstone"], team["is_professional"])
+
+
 def _initialize_db():
 
     # Lock the block of code to prevent race conditions
@@ -28,7 +59,9 @@ def _initialize_db():
                 first_name TEXT,
                 last_name TEXT,
 
-                is_capstone BOOLEAN DEFAULT 0,
+                is_capstone BOOLEAN NOT NULL DEFAULT 0,
+                is_professional BOOLEAN NOT NULL DEFAULT 0,
+                is_sponsor BOOLEAN NOT NULL DEFAULT 0,
 
                 is_participant BOOLEAN DEFAULT 0,
                 is_judge BOOLEAN DEFAULT 0,
@@ -36,13 +69,27 @@ def _initialize_db():
             )
         """)
 
+        registration_columns = {
+            row["name"] for row in conn.execute(f"PRAGMA table_info({_REG_TABLE_NAME})")
+        }
+        if "is_professional" not in registration_columns:
+            conn.execute(
+                f"ALTER TABLE {_REG_TABLE_NAME} "
+                "ADD COLUMN is_professional BOOLEAN NOT NULL DEFAULT 0"
+            )
+        if "is_sponsor" not in registration_columns:
+            conn.execute(
+                f"ALTER TABLE {_REG_TABLE_NAME} "
+                "ADD COLUMN is_sponsor BOOLEAN NOT NULL DEFAULT 0"
+            )
+
         # Verified Table
         # ON DELETE CASCADE: Deleting a Registration automatically deletes this verified user.
         # ON DELETE SET NULL: Deleting a Team just clears the user's team status, doesn't delete the user.
         conn.execute(f"""
             CREATE TABLE IF NOT EXISTS {_VERIFIED_TABLE_NAME} (
                 email TEXT PRIMARY KEY REFERENCES {_REG_TABLE_NAME}(email) ON DELETE CASCADE,
-                
+
                 discord_id INTEGER UNIQUE,
                 username TEXT UNIQUE NOT NULL,
                 team_id INTEGER REFERENCES {_TEAM_TABLE_NAME}(id) ON DELETE SET NULL
@@ -55,7 +102,8 @@ def _initialize_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL,
 
-                is_capstone BOOLEAN DEFAULT 0,
+                is_capstone BOOLEAN NOT NULL DEFAULT 0,
+                is_professional BOOLEAN NOT NULL DEFAULT 0,
                 team_lead INTEGER REFERENCES {_VERIFIED_TABLE_NAME}(discord_id) ON DELETE SET NULL,
 
                 role_id INTEGER NOT NULL,
@@ -69,10 +117,13 @@ def _initialize_db():
             row["name"]
             for row in conn.execute(f"PRAGMA table_info({_TEAM_TABLE_NAME})")
         }
-        if "grace_period" not in team_columns:
+        if "is_professional" not in team_columns:
             conn.execute(
-                f"ALTER TABLE {_TEAM_TABLE_NAME} ADD COLUMN grace_period REAL"
+                f"ALTER TABLE {_TEAM_TABLE_NAME} "
+                "ADD COLUMN is_professional BOOLEAN NOT NULL DEFAULT 0"
             )
+        if "grace_period" not in team_columns:
+            conn.execute(f"ALTER TABLE {_TEAM_TABLE_NAME} ADD COLUMN grace_period REAL")
 
         # 4. CODES TABLE (Temporary Storage)
         conn.execute(f"""
@@ -125,9 +176,17 @@ def _get_connection():
 
 
 def add_registration(
-    email: str, first_name: str, last_name: str, is_capstone: bool, roles: list
+    email: str,
+    first_name: str,
+    last_name: str,
+    is_capstone: bool,
+    roles: list,
+    *,
+    is_professional: bool = False,
+    is_sponsor: bool = False,
 ):
-    """Adds a new user to the registration table."""
+    """Insert a registration or overwrite it with the supplied values."""
+    get_category(is_capstone, is_professional)
     email = normalize_email(email)
 
     is_p = "participant" in roles
@@ -138,17 +197,29 @@ def add_registration(
         # "Upsert" Logic: If email exists, UPDATE fields. If not, INSERT.
         conn.execute(
             f"""
-            INSERT INTO {_REG_TABLE_NAME} (email, first_name, last_name, is_capstone, is_participant, is_judge, is_mentor)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO {_REG_TABLE_NAME} (email, first_name, last_name, is_capstone, is_professional, is_sponsor, is_participant, is_judge, is_mentor)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(email) DO UPDATE SET
                 first_name = excluded.first_name,
                 last_name = excluded.last_name,
                 is_capstone = excluded.is_capstone,
+                is_professional = excluded.is_professional,
+                is_sponsor = excluded.is_sponsor,
                 is_participant = excluded.is_participant,
                 is_judge = excluded.is_judge,
                 is_mentor = excluded.is_mentor
         """,
-            (email, first_name, last_name, is_capstone, is_p, is_j, is_m),
+            (
+                email,
+                first_name,
+                last_name,
+                is_capstone,
+                is_professional,
+                is_sponsor,
+                is_p,
+                is_j,
+                is_m,
+            ),
         )
         conn.commit()
     logger.debug("registration_upserted email=%r", email)
@@ -192,7 +263,7 @@ def update_roles(email: str, roles: list):
         conn.execute(
             f"""
             UPDATE {_REG_TABLE_NAME}
-            SET is_participant = ?, is_judge = ?, is_mentor = ? 
+            SET is_participant = ?, is_judge = ?, is_mentor = ?
             WHERE email = ?
         """,
             (is_p, is_j, is_m, email),
@@ -233,7 +304,7 @@ def get_user_roles(email: str) -> list:
     with _get_connection() as conn:
         row = conn.execute(
             """
-            SELECT is_participant, is_judge, is_mentor 
+            SELECT is_participant, is_judge, is_mentor
             FROM registration WHERE email = ?
         """,
             (email,),
@@ -282,17 +353,19 @@ def add_verified_user(
         logger.info("verified_user_already_exists email=%r", email)
     return added
 
+
 def normalize_email(email: str) -> str:
     updatedEmail = email.lower().strip()
-    updatedEmail = updatedEmail.replace(" ","")
+    updatedEmail = updatedEmail.replace(" ", "")
     if updatedEmail.count("@") != 1:
-        if not "@" in updatedEmail:
+        if "@" not in updatedEmail:
             logger.info("Missing '@' symbol: please reenter email")
             return ""
         else:
             logger.info("Email must only contain one '@' symbol: please reenter email")
             return ""
     return updatedEmail
+
 
 def remove_verified_user(email: str):
     """Removes the verification status."""
@@ -330,9 +403,10 @@ def get_verified_user(identifier) -> dict:
     with _get_connection() as conn:
         row = conn.execute(
             f"""
-            SELECT v.discord_id, v.username, v.team_id, 
-                   r.email, r.first_name, r.last_name, 
-                   r.is_participant, r.is_judge, r.is_mentor, r.is_capstone
+            SELECT v.discord_id, v.username, v.team_id,
+                   r.email, r.first_name, r.last_name,
+                   r.is_participant, r.is_judge, r.is_mentor,
+                   r.is_capstone, r.is_professional
             FROM {_VERIFIED_TABLE_NAME} v
             JOIN {_REG_TABLE_NAME} r ON v.email = r.email
             WHERE {where_clause}
@@ -425,15 +499,26 @@ def create_team(
     category_id: int,
     text_id: int,
     voice_id=None,
+    *,
+    is_professional: bool = False,
 ) -> int:
     """Creates a new team and returns its new database ID."""
+    get_category(is_capstone, is_professional)
     with _LOCK, _get_connection() as conn:
         cursor = conn.execute(
             f"""
-            INSERT INTO {_TEAM_TABLE_NAME} (name, is_capstone, role_id, category_id, text_id, voice_id) 
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO {_TEAM_TABLE_NAME} (name, is_capstone, is_professional, role_id, category_id, text_id, voice_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-            (name, is_capstone, role_id, category_id, text_id, voice_id),
+            (
+                name,
+                is_capstone,
+                is_professional,
+                role_id,
+                category_id,
+                text_id,
+                voice_id,
+            ),
         )
         conn.commit()
         team_id = cursor.lastrowid
@@ -505,7 +590,7 @@ def get_team_size(identifier) -> int:
             # Query by Name: Look up team first, or use a subquery
             count = conn.execute(
                 f"""
-                SELECT COUNT(*) FROM {_VERIFIED_TABLE_NAME} 
+                SELECT COUNT(*) FROM {_VERIFIED_TABLE_NAME}
                 WHERE team_id = (SELECT id FROM {_TEAM_TABLE_NAME} WHERE name = ?)
             """,
                 (identifier,),
@@ -586,7 +671,7 @@ def get_team_members(identifier) -> list:
             # Query by Name (Subquery to find ID first)
             rows = conn.execute(
                 f"""
-                {query} 
+                {query}
                 WHERE v.team_id = (SELECT id FROM teams WHERE name = ?)
             """,
                 (identifier,),
@@ -735,8 +820,11 @@ def remove_from_lfg(discord_id: int):
         conn.commit()
 
 
-def get_lfg_list() -> list:
-    """Returns verified users in the LFG pool who are not on a team."""
+def get_lfg_list(category: ParticipantCategory) -> list:
+    """Returns unassigned LFG users in the requested participant category."""
+    category = ParticipantCategory(category)
+    is_capstone = category is ParticipantCategory.CAPSTONE
+    is_professional = category is ParticipantCategory.PROFESSIONAL
     with _get_connection() as conn:
         rows = conn.execute(
             f"""
@@ -745,8 +833,11 @@ def get_lfg_list() -> list:
             JOIN {_VERIFIED_TABLE_NAME} v ON l.discord_id = v.discord_id
             JOIN {_REG_TABLE_NAME} r ON v.email = r.email
             WHERE v.team_id IS NULL
+              AND r.is_capstone = ?
+              AND r.is_professional = ?
             ORDER BY l.created_at ASC
-        """
+        """,
+            (is_capstone, is_professional),
         ).fetchall()
         return [dict(row) for row in rows]
 

@@ -11,9 +11,7 @@ class DatabaseTestMixin:
     def setUp(self):
         super().setUp()
         self._database_directory = tempfile.TemporaryDirectory()
-        records._DATABASE_FILE = str(
-            Path(self._database_directory.name) / "records.db"
-        )
+        records._DATABASE_FILE = str(Path(self._database_directory.name) / "records.db")
         records._initialize_db()
 
     def tearDown(self):
@@ -28,6 +26,7 @@ class DatabaseTestMixin:
         *,
         username=None,
         is_capstone=False,
+        is_professional=False,
         roles=None,
     ):
         email = email or f"user{discord_id}@example.com"
@@ -38,6 +37,7 @@ class DatabaseTestMixin:
             "User",
             is_capstone,
             roles if roles is not None else ["participant"],
+            is_professional=is_professional,
         )
         records.add_verified_user(email, discord_id, username)
         return email

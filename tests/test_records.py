@@ -19,6 +19,7 @@ class RecordsTestCase(DatabaseTestCase):
         self.assertEqual(registration["first_name"], "Pat")
         self.assertEqual(registration["last_name"], "One")
         self.assertEqual(registration["is_capstone"], 1)
+        self.assertEqual(registration["is_sponsor"], 0)
         self.assertEqual(
             records.get_user_roles("person@example.com"),
             ["participant", "judge", "mentor"],
@@ -34,6 +35,8 @@ class RecordsTestCase(DatabaseTestCase):
                 "first_name": "Updated",
                 "last_name": "Name",
                 "is_capstone": 0,
+                "is_professional": 0,
+                "is_sponsor": 0,
                 "is_participant": 0,
                 "is_judge": 0,
                 "is_mentor": 1,
@@ -66,6 +69,43 @@ class RecordsTestCase(DatabaseTestCase):
         self.assertFalse(records.is_registered("person@example.com"))
         self.assertFalse(records.is_verified(101))
 
+    def test_professional_category_persists_and_team_category_is_independent(self):
+        records.add_registration(
+            "professional@example.com",
+            "Pro",
+            "User",
+            False,
+            ["participant"],
+            is_professional=True,
+        )
+        records.add_verified_user("professional@example.com", 101, "pro#0001")
+        self.assertEqual(records.get_category(False, True), "professional")
+        self.assertEqual(records.get_verified_user(101)["is_professional"], 1)
+
+        team_id = records.create_team(
+            "Professional Team", False, 201, 202, 203, is_professional=True
+        )
+        records.join_team(101, team_id)
+        records.add_registration(
+            "professional@example.com", "Pro", "User", False, ["participant"]
+        )
+        self.assertEqual(
+            records.get_registration("professional@example.com")["is_professional"],
+            0,
+        )
+        self.assertEqual(records.get_team(team_id)["is_professional"], 1)
+
+        with self.assertRaisesRegex(ValueError, "cannot both be true"):
+            records.add_registration(
+                "invalid@example.com",
+                "Invalid",
+                "User",
+                True,
+                ["participant"],
+                is_professional=True,
+            )
+        self.assertIsNone(records.get_registration("invalid@example.com"))
+
     def test_email_normalization_is_applied_before_storage(self):
         records.add_registration(
             " Person @ Example.COM ", "Pat", "Person", False, ["participant"]
@@ -93,9 +133,7 @@ class RecordsTestCase(DatabaseTestCase):
 
     def test_verified_lookup_removal_and_same_email_is_noop(self):
         self.add_verified(101, email="person@example.com", username="person#0001")
-        added = records.add_verified_user(
-            "person@example.com", 202, "replacement#0001"
-        )
+        added = records.add_verified_user("person@example.com", 202, "replacement#0001")
 
         self.assertFalse(added)
         self.assertEqual(records.get_verified_email(101), "person@example.com")
@@ -236,7 +274,7 @@ class RecordsTestCase(DatabaseTestCase):
         self.assertTrue(records.is_looking(101))
         self.assertTrue(records.is_looking(102))
         self.assertEqual(
-            records.get_lfg_list(),
+            records.get_lfg_list(records.ParticipantCategory.STANDARD),
             [
                 {
                     "discord_id": 101,
@@ -279,6 +317,23 @@ class RecordsTestCase(DatabaseTestCase):
         with sqlite3.connect(records._DATABASE_FILE) as connection:
             connection.execute(
                 """
+                CREATE TABLE registration (
+                    email TEXT PRIMARY KEY,
+                    first_name TEXT,
+                    last_name TEXT,
+                    is_capstone BOOLEAN DEFAULT 0,
+                    is_participant BOOLEAN DEFAULT 0,
+                    is_judge BOOLEAN DEFAULT 0,
+                    is_mentor BOOLEAN DEFAULT 0
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO registration(email, first_name, last_name) VALUES (?, ?, ?)",
+                ("legacy@example.com", "Legacy", "Attendee"),
+            )
+            connection.execute(
+                """
                 CREATE TABLE teams (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
@@ -297,7 +352,51 @@ class RecordsTestCase(DatabaseTestCase):
             columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(teams)")
             }
+        self.assertIn("is_professional", columns)
         self.assertIn("grace_period", columns)
+        with records._get_connection() as connection:
+            registration_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(registration)")
+            }
+        self.assertIn("is_professional", registration_columns)
+        self.assertIn("is_sponsor", registration_columns)
+        legacy_registration = records.get_registration("legacy@example.com")
+        self.assertEqual(legacy_registration["first_name"], "Legacy")
+        self.assertEqual(legacy_registration["is_sponsor"], 0)
+
+    def test_sponsor_status_persists_on_insert_and_update_and_survives_role_updates(
+        self,
+    ):
+        records.add_registration(
+            "sponsor@example.com",
+            "Sam",
+            "Sponsor",
+            False,
+            ["participant"],
+            is_sponsor=True,
+        )
+        self.assertEqual(
+            records.get_registration("sponsor@example.com")["is_sponsor"], 1
+        )
+
+        records.add_registration(
+            "sponsor@example.com",
+            "Updated",
+            "Sponsor",
+            False,
+            ["mentor"],
+            is_sponsor=True,
+        )
+        records.update_roles("sponsor@example.com", ["judge"])
+        registration = records.get_registration("sponsor@example.com")
+        self.assertEqual(registration["is_sponsor"], 1)
+        self.assertEqual(records.get_user_roles("sponsor@example.com"), ["judge"])
+
+        records.add_registration(
+            "sponsor@example.com", "Updated", "Sponsor", False, ["judge"]
+        )
+        self.assertFalse(records.get_registration("sponsor@example.com")["is_sponsor"])
 
     def test_legacy_codes_table_gets_expiration_column(self):
         legacy_database = self._database_directory.name + "/legacy.db"

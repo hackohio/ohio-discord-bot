@@ -18,12 +18,10 @@ class ConsoleFormatterTestCase(unittest.TestCase):
         self.assertIn("token=REDACTED", rendered)
 
     def test_can_disable_colors(self):
-        record = logging.LogRecord(
-            "test", logging.INFO, __file__, 1, "hello", (), None
-        )
+        record = logging.LogRecord("test", logging.INFO, __file__, 1, "hello", (), None)
 
-        rendered = ConsoleFormatter("%(levelname)s %(message)s", use_color=False).format(
-            record
-        )
+        rendered = ConsoleFormatter(
+            "%(levelname)s %(message)s", use_color=False
+        ).format(record)
 
         self.assertEqual(rendered, "INFO hello")

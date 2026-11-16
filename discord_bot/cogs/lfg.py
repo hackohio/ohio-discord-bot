@@ -79,7 +79,22 @@ class LfgCog(commands.Cog):
         """Show the current looking-for-group pool."""
         await interaction.response.defer(ephemeral=True)
 
-        seekers = records.get_lfg_list()
+        if not records.is_verified(interaction.user.id):
+            await interaction.edit_original_response(
+                content="You need to verify first! Use the `/verify` command, then try again."
+            )
+            return
+
+        viewer = records.get_verified_user(interaction.user.id)
+        if not viewer["is_participant"]:
+            await interaction.edit_original_response(
+                content="Only verified participants can view teammates in the LFG pool."
+            )
+            return
+
+        seekers = records.get_lfg_list(
+            records.get_verified_category(interaction.user.id)
+        )
         present = []
         for seeker in seekers:
             member = interaction.guild.get_member(seeker["discord_id"])
@@ -111,9 +126,7 @@ class LfgCog(commands.Cog):
         description = "\n\n".join(lines)
         remaining = len(present) - shown
         if remaining > 0:
-            description += (
-                f"\n\n_...and {remaining} more looking. The list will shrink as teams form._"
-            )
+            description += f"\n\n_...and {remaining} more looking. The list will shrink as teams form._"
 
         embed = create_embed(f"Looking for a Team ({len(present)})", description)
         await interaction.edit_original_response(embed=embed)

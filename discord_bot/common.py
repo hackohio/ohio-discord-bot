@@ -55,9 +55,7 @@ def audit_command(callback):
     @functools.wraps(callback)
     async def audited(*args, **kwargs):
         invocation = _command_context(args)
-        user = getattr(invocation, "user", None) or getattr(
-            invocation, "author", None
-        )
+        user = getattr(invocation, "user", None) or getattr(invocation, "author", None)
         guild = getattr(invocation, "guild", None)
         fields = {
             "command": callback.__name__,

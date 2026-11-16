@@ -32,3 +32,14 @@ variable "ssh_allowed_cidrs" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
+
+variable "alert_email" {
+  description = "GitHub Actions secret recipient for monitoring alerts."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(trimspace(var.alert_email)) > 0
+    error_message = "alert_email must not be empty."
+  }
+}

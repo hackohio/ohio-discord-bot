@@ -42,8 +42,6 @@ def import_file(source_filename: str) -> dict:
             )
 
         is_participant = "Roles" not in fields
-        if is_participant and "Capstone Team" not in fields:
-            raise ValueError("CSV file missing required attribute: Capstone Team")
 
         for row_number, entry in enumerate(reader, start=2):
             totals["entries"] += 1
@@ -57,9 +55,22 @@ def import_file(source_filename: str) -> dict:
                     totals["missing_email"] += 1
                     continue
 
-                is_capstone = (
-                    entry.get("Capstone Team") == "Yes" if is_participant else False
-                )
+                existing = records.get_registration(email)
+                flags = {}
+                for column, flag in (
+                    ("Capstone Team", "is_capstone"),
+                    ("is_professional", "is_professional"),
+                    ("is_sponsor", "is_sponsor"),
+                ):
+                    value = (entry.get(column) or "").strip()
+                    if value not in {"", "Yes", "No"}:
+                        raise ValueError(f"{column} must be Yes or No")
+                    flags[flag] = (
+                        bool(existing and existing[flag])
+                        if not value
+                        else value == "Yes"
+                    )
+
                 if is_participant:
                     roles = ["participant"]
                 else:
@@ -73,11 +84,10 @@ def import_file(source_filename: str) -> dict:
                         totals["missing_role"] += 1
                         continue
 
-                existing = records.get_registration(email)
                 if existing and (
                     existing["first_name"] == entry["First Name"]
                     and existing["last_name"] == entry["Last Name"]
-                    and (not is_participant or existing["is_capstone"] == is_capstone)
+                    and all(existing[flag] == value for flag, value in flags.items())
                     and set(records.get_user_roles(email)) == set(roles)
                 ):
                     totals["duplicate"] += 1
@@ -88,8 +98,10 @@ def import_file(source_filename: str) -> dict:
                     email,
                     entry["First Name"],
                     entry["Last Name"],
-                    is_capstone,
+                    flags["is_capstone"],
                     roles,
+                    is_professional=flags["is_professional"],
+                    is_sponsor=flags["is_sponsor"],
                 )
                 totals[outcome] += 1
             except Exception as exc:

@@ -85,10 +85,14 @@ class CleanupMessageTestCase(unittest.IsolatedAsyncioTestCase):
         cases = (
             self.message(self.author(1)),
             self.message(self.author(2), pinned=True),
-            self.message(self.author(3), message_type=discord.MessageType.recipient_add),
+            self.message(
+                self.author(3), message_type=discord.MessageType.recipient_add
+            ),
             self.message(self.author(20)),
             self.message(
-                self.author(4, roles=[SimpleNamespace(id=config.discord_organizer_role_id)])
+                self.author(
+                    4, roles=[SimpleNamespace(id=config.discord_organizer_role_id)]
+                )
             ),
             self.message(self.author(5, administrator=True)),
         )

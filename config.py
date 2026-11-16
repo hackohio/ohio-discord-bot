@@ -19,6 +19,7 @@ _REQUIRED_CONFIG_ENTRIES = [
     ("discord", "participant_role_id"),
     ("discord", "mentor_role_id"),
     ("discord", "judge_role_id"),
+    ("discord", "sponsor_role_id"),
     ("discord", "team_assigned_role_id"),
     ("discord", "all_access_pass_role_id"),
     ("discord", "verified_role_id"),
@@ -144,6 +145,7 @@ discord_organizer_role_id = _get_int("discord", "organizer_role_id")
 discord_participant_role_id = _get_int("discord", "participant_role_id")
 discord_mentor_role_id = _get_int("discord", "mentor_role_id")
 discord_judge_role_id = _get_int("discord", "judge_role_id")
+discord_sponsor_role_id = _get_int("discord", "sponsor_role_id")
 discord_team_assigned_role_id = _get_int("discord", "team_assigned_role_id")
 discord_all_access_pass_role_id = _get_int("discord", "all_access_pass_role_id")
 discord_verified_role_id = _get_int("discord", "verified_role_id")

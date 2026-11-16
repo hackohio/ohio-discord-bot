@@ -1,8 +1,8 @@
 import logging
-from pathlib import Path
 import secrets
 import time
 import uuid
+from pathlib import Path
 
 from flask import Flask, g, jsonify, request
 from waitress import serve
@@ -14,8 +14,8 @@ from logging_config import configure_logging
 logger = logging.getLogger(__name__)
 
 """
-The purpose of this file is to stay active and listen for any incoming post requests from 
-the Qualtrics Workflow that should send the bot a request to update the userDB anytime someone 
+The purpose of this file is to stay active and listen for any incoming post requests from
+the Qualtrics Workflow that should send the bot a request to update the userDB anytime someone
 registers for the event. This will keep the db up-to-date with new registrations
 
 Format for Post Requests JSON
@@ -28,9 +28,11 @@ Format for Post Requests JSON
 
         'first_name': str,
         'last_name': str,
-        
+
         'is_capstone': bool,
-        'roles': "role,role", (comma-separated)        
+        'is_professional': bool,
+        'is_sponsor': bool, (optional)
+        'roles': "role,role", (comma-separated)
     }
 }
 """
@@ -145,9 +147,47 @@ def push_user():
         )
         return jsonify({"error": "is_capstone must be a boolean"}), 400
 
+    is_professional = data.get("is_professional", False)
+    if not isinstance(is_professional, bool):
+        logger.warning(
+            "webhook_request_rejected request_id=%r reason=%r",
+            request_id,
+            "invalid_is_professional",
+        )
+        return jsonify({"error": "is_professional must be a boolean"}), 400
+
+    is_sponsor = data.get("is_sponsor", False)
+    if not isinstance(is_sponsor, bool):
+        logger.warning(
+            "webhook_request_rejected request_id=%r reason=%r",
+            request_id,
+            "invalid_is_sponsor",
+        )
+        return jsonify({"error": "is_sponsor must be a boolean"}), 400
+    try:
+        records.get_category(is_capstone, is_professional)
+    except ValueError:
+        logger.warning(
+            "webhook_request_rejected request_id=%r reason=%r",
+            request_id,
+            "invalid_categories",
+        )
+        return (
+            jsonify({"error": "is_capstone and is_professional cannot both be true"}),
+            400,
+        )
+
     # 5. Add Registered User to Database
     try:
-        records.add_registration(email, first_name, last_name, is_capstone, roles)
+        records.add_registration(
+            email,
+            first_name,
+            last_name,
+            is_capstone,
+            roles,
+            is_professional=is_professional,
+            is_sponsor=is_sponsor,
+        )
         return (
             jsonify(
                 {
@@ -155,6 +195,8 @@ def push_user():
                     "first_name": first_name,
                     "last_name": last_name,
                     "is_capstone": is_capstone,
+                    "is_professional": is_professional,
+                    "is_sponsor": is_sponsor,
                     "roles": roles,
                 }
             ),
